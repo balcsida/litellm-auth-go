@@ -30,6 +30,11 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	normalized, err := normalizeBaseURL(c.baseURL, c.allowInsecureHTTP)
+	if err != nil {
+		return nil, err
+	}
+	c.baseURL = normalized.String()
 	return c, nil
 }
 
