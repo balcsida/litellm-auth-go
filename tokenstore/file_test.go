@@ -443,6 +443,7 @@ func TestFileStoreDeleteIsIdempotent(t *testing.T) {
 func TestNewFileStoreDefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	store, err := NewFileStore("")
 	if err != nil {
 		t.Fatalf("NewFileStore() error = %v", err)
