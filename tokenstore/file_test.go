@@ -346,7 +346,7 @@ func TestFileStoreAtomicReplacementNeverExposesPartialJSON(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				raw, err := os.ReadFile(path)
+				credential, err := store.Load(context.Background(), nil)
 				if err != nil {
 					select {
 					case errs <- err:
@@ -354,8 +354,7 @@ func TestFileStoreAtomicReplacementNeverExposesPartialJSON(t *testing.T) {
 					}
 					return
 				}
-				var saved map[string]any
-				if err := json.Unmarshal(raw, &saved); err != nil || (saved["key"] != "old" && saved["key"] != "new") {
+				if credential.Key != "old" && credential.Key != "new" {
 					select {
 					case errs <- errors.New("reader observed invalid credential JSON"):
 					default:
