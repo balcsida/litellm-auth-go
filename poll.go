@@ -412,10 +412,6 @@ func pollRequiresSelection(raw json.RawMessage) (bool, error) {
 	return requires, nil
 }
 
-func containsKeySpaceOrControl(key string) bool {
-	return strings.IndexFunc(key, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0
-}
-
 func pollCredential(decoded pollResponse) (Credential, error) {
 	raw, err := json.Marshal(struct {
 		Key                 string          `json:"key"`

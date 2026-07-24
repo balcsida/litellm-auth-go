@@ -5,69 +5,19 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/balcsida/litellm-auth-go/internal/baseurl"
 )
 
 func normalizeBaseURL(raw string, allowInsecureHTTP bool) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil || strings.Contains(raw, "#") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
-		return nil, errors.New("invalid LiteLLM base URL")
-	}
-	scheme, host, ok := normalizedOrigin(u)
-	if !ok || (scheme == "http" && !allowInsecureHTTP && !isLoopbackHost(u.Hostname())) {
-		return nil, errors.New("invalid LiteLLM base URL")
-	}
-	u.Scheme, u.Host = scheme, host
-	path := strings.TrimRight(u.EscapedPath(), "/")
-	u.Path, err = url.PathUnescape(path)
+	u, err := baseurl.Normalize(raw)
 	if err != nil {
-		return nil, errors.New("invalid LiteLLM base URL")
+		return nil, err
 	}
-	if path == u.Path {
-		u.RawPath = ""
-	} else {
-		u.RawPath = path
+	if u.Scheme == "http" && !allowInsecureHTTP && !isLoopbackHost(u.Hostname()) {
+		return nil, errors.New("invalid LiteLLM base URL")
 	}
 	return u, nil
-}
-
-func normalizedOrigin(u *url.URL) (scheme, host string, ok bool) {
-	if u == nil || u.Host == "" {
-		return "", "", false
-	}
-	scheme = strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return "", "", false
-	}
-	hostname := strings.ToLower(u.Hostname())
-	if hostname == "" || !validURLHost(u.Host) {
-		return "", "", false
-	}
-	if ip := net.ParseIP(hostname); ip != nil {
-		hostname = ip.String()
-	}
-	port := u.Port()
-	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
-		port = ""
-	}
-	if port == "" {
-		if strings.Contains(hostname, ":") {
-			return scheme, "[" + hostname + "]", true
-		}
-		return scheme, hostname, true
-	}
-	return scheme, net.JoinHostPort(hostname, port), true
-}
-
-func validURLHost(host string) bool {
-	if strings.HasPrefix(host, "[") {
-		end := strings.LastIndex(host, "]")
-		if end < 0 {
-			return false
-		}
-		tail := host[end+1:]
-		return tail == "" || (strings.HasPrefix(tail, ":") && tail[1:] != "")
-	}
-	return !strings.Contains(host, ":") || !strings.HasSuffix(host, ":")
 }
 
 func isLoopbackHost(host string) bool {
@@ -141,7 +91,7 @@ func sameOrigin(base string, candidate *url.URL) bool {
 	if err != nil {
 		return false
 	}
-	baseScheme, baseHost, baseOK := normalizedOrigin(baseURL)
-	candidateScheme, candidateHost, candidateOK := normalizedOrigin(candidate)
+	baseScheme, baseHost, baseOK := baseurl.Origin(baseURL)
+	candidateScheme, candidateHost, candidateOK := baseurl.Origin(candidate)
 	return baseOK && candidateOK && baseScheme == candidateScheme && baseHost == candidateHost
 }
