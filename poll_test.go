@@ -170,6 +170,7 @@ func TestPollOnceRejectsSecretsInOutwardMetadata(t *testing.T) {
 		{name: "user ID", body: `{"status":"ready","key":"` + key + `","user_id":"user-` + key + `"}`},
 		{name: "selected team ID", body: `{"status":"ready","key":"` + key + `","team_id":"team-` + key + `","teams":["team-` + key + `"]}`},
 		{name: "selected team alias", body: `{"status":"ready","key":"` + key + `","team_id":"team-1","team_details":[{"team_id":"team-1","team_alias":"alias-` + key + `"}]}`},
+		{name: "attribution key", body: `{"status":"ready","key":"` + key + `","attribution_metadata":{"field-` + key + `":"department"}}`},
 		{name: "attribution string", body: `{"status":"ready","key":"` + key + `","attribution_metadata":{"department":"dept-` + key + `"}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {

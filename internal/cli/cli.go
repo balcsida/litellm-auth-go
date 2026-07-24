@@ -367,7 +367,10 @@ func credentialSafeForOutput(credential litellmauth.Credential) bool {
 			return false
 		}
 	}
-	for _, value := range credential.AttributionMetadata {
+	for name, value := range credential.AttributionMetadata {
+		if containsKey(name) {
+			return false
+		}
 		if text, ok := value.(string); ok && containsKey(text) {
 			return false
 		}

@@ -424,7 +424,10 @@ func credentialMetadataContainsSecret(credential Credential, secrets ...string) 
 		teamsContainSecret(credential.Teams, secrets...) {
 		return true
 	}
-	for _, value := range credential.AttributionMetadata {
+	for name, value := range credential.AttributionMetadata {
+		if stringContainsSecret(name, secrets...) {
+			return true
+		}
 		if text, ok := value.(string); ok && stringContainsSecret(text, secrets...) {
 			return true
 		}

@@ -296,7 +296,10 @@ func credentialMetadataContainsKey(credential litellmauth.Credential) bool {
 			return true
 		}
 	}
-	for _, value := range credential.AttributionMetadata {
+	for name, value := range credential.AttributionMetadata {
+		if containsKey(name) {
+			return true
+		}
 		if text, ok := value.(string); ok && containsKey(text) {
 			return true
 		}
