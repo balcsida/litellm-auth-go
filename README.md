@@ -44,7 +44,7 @@ proxy-provided teams. See [`examples/manual-login`](examples/manual-login).
 credential, err := client.Authenticate(ctx, litellmauth.AuthenticateOptions{
 	TeamID: "team-engineering",
 	OnSession: func(_ context.Context, session litellmauth.Session) error {
-		fmt.Printf("Open %s\\nCode: %s\\n", session.VerificationURL, session.UserCode)
+		fmt.Printf("Open %s\nCode: %s\n", session.VerificationURL, session.UserCode)
 		return nil
 	},
 })
