@@ -268,7 +268,7 @@ func retryablePollError(err error) bool {
 		return true
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func retryDelay(err error, now time.Time, fallback time.Duration) time.Duration {
