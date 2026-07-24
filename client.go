@@ -51,7 +51,7 @@ func (c *Client) Start(ctx context.Context) (Session, error) {
 	}
 	defer response.Body.Close()
 
-	body, detail, oversized := readStartResponse(response)
+	body, detail, oversized, readErr := readStartResponse(response)
 	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed {
 		return Session{}, fmt.Errorf("%w: upgrade the LiteLLM proxy or check the base URL", ErrUnsupportedProxy)
 	}
@@ -62,6 +62,9 @@ func (c *Client) Start(ctx context.Context) (Session, error) {
 			Detail:     detail,
 			Retryable:  response.StatusCode == http.StatusTooManyRequests,
 		}
+	}
+	if readErr != nil {
+		return Session{}, protocolReadError(detail, readErr)
 	}
 	if oversized || responseContentType(response) != "application/json" {
 		return Session{}, protocolError(detail)
@@ -103,9 +106,9 @@ func (c *Client) startExpiry(raw json.RawMessage) (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
-func readStartResponse(response *http.Response) ([]byte, string, bool) {
-	body, _ := io.ReadAll(io.LimitReader(response.Body, maxStartResponseBytes+1))
-	return body, fmt.Sprintf("content-type=%s bytes=%d", responseContentType(response), len(body)), len(body) > maxStartResponseBytes
+func readStartResponse(response *http.Response) ([]byte, string, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxStartResponseBytes+1))
+	return body, fmt.Sprintf("content-type=%s bytes=%d", responseContentType(response), len(body)), len(body) > maxStartResponseBytes, err
 }
 
 func responseContentType(response *http.Response) string {
@@ -120,3 +123,7 @@ func responseContentType(response *http.Response) string {
 }
 
 func protocolError(detail string) error { return fmt.Errorf("%w: %s", ErrProtocol, detail) }
+
+func protocolReadError(detail string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrProtocol, detail, err)
+}

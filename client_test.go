@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,25 @@ func TestStartRejectsInvalidOrOversizedJSONWithoutLeakingBody(t *testing.T) {
 				t.Fatalf("Start() leaked body: %q", err)
 			}
 		})
+	}
+}
+
+func TestStartRejectsPartialResponseWithoutLeakingBody(t *testing.T) {
+	body := `{"login_id":"login","poll_secret":"do-not-leak","user_code":"CODE"}`
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)+1))
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.Start(context.Background())
+	if !errors.Is(err, ErrProtocol) || !errors.Is(err, io.ErrUnexpectedEOF) || strings.Contains(err.Error(), "do-not-leak") {
+		t.Fatalf("Start() error = %v", err)
 	}
 }
 
