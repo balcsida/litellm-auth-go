@@ -269,8 +269,11 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 }
 
 func parseTimestamp(raw json.RawMessage) (time.Time, error) {
-	if len(raw) == 0 || string(raw) == "null" {
+	if len(raw) == 0 {
 		return time.Time{}, nil
+	}
+	if string(raw) == "null" {
+		return time.Time{}, errors.New("timestamp must be numeric")
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()

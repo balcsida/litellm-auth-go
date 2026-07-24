@@ -142,17 +142,31 @@ func TestFileStoreLoadLegacyAndUnknownFields(t *testing.T) {
 	}
 }
 
-func TestFileStoreLoadDoesNotRejectStaleCredential(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "token.json")
-	store, _ := NewFileStore(path)
-	writeTokenFile(t, path, `{"key":"sk-key","timestamp":1}`)
-
-	got, err := store.Load(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if got.Fresh(time.Unix(1_784_800_000, 0)) {
-		t.Fatal("loaded old credential is fresh")
+func TestFileStoreLoadTimestampVariants(t *testing.T) {
+	now := time.Unix(1_784_800_100, 0)
+	for _, test := range []struct {
+		name      string
+		body      string
+		issuedAt  time.Time
+		wantFresh bool
+	}{
+		{name: "missing", body: `{"key":"sk-key"}`},
+		{name: "zero", body: `{"key":"sk-key","timestamp":0}`},
+		{name: "fractional", body: `{"key":"sk-key","timestamp":1784800000.125}`, issuedAt: time.Unix(1_784_800_000, 125_000_000), wantFresh: true},
+		{name: "future", body: `{"key":"sk-key","timestamp":1784800101}`, issuedAt: now.Add(time.Second)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "token.json")
+			store, _ := NewFileStore(path)
+			writeTokenFile(t, path, test.body)
+			got, err := store.Load(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if !got.IssuedAt.Equal(test.issuedAt) || got.Fresh(now) != test.wantFresh {
+				t.Fatalf("IssuedAt = %s, Fresh() = %v", got.IssuedAt, got.Fresh(now))
+			}
+		})
 	}
 }
 
@@ -171,6 +185,7 @@ func TestFileStoreRejectsMalformedFiles(t *testing.T) {
 		{name: "metadata nested", body: `{"key":"sk-key","attribution_metadata":{"nested":{}}}`},
 		{name: "invalid base URL", body: `{"base_url":"https://user@example.com","key":"sk-key"}`},
 		{name: "base URL query", body: `{"base_url":"https://example.com?x=1","key":"sk-key"}`},
+		{name: "null timestamp", body: `{"key":"sk-key","timestamp":null}`},
 		{name: "invalid timestamp", body: `{"key":"sk-key","timestamp":"today"}`},
 		{name: "invalid teams", body: `{"key":"sk-key","teams":[1]}`},
 		{name: "invalid team details", body: `{"key":"sk-key","team_details":[{"team_alias":"Missing ID"}]}`},
