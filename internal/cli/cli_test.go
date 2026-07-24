@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	litellmauth "github.com/balcsida/litellm-auth-go"
+	"github.com/balcsida/litellm-auth-go/tokenstore"
 )
 
 var testNow = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
@@ -542,6 +544,24 @@ func TestPrintTokenExplicitIssuerPrecedence(t *testing.T) {
 				t.Fatalf("Load base = %v, want %q", store.loadBase, test.want)
 			}
 		})
+	}
+}
+
+func TestPrintTokenBindsStoredTokenToBaseURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials", "token.json")
+	store, err := tokenstore.NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(context.Background(), successfulCredential()); err != nil {
+		t.Fatal(err)
+	}
+	deps, stdout, _ := testDependencies(new(fakeStore))
+	deps.newStore = func(string) (credentialStore, error) { return store, nil }
+
+	err = execute(context.Background(), []string{"--base-url", "https://other.example.com", "print-token"}, deps)
+	if !errors.Is(err, litellmauth.ErrOriginMismatch) || stdout.Len() != 0 {
+		t.Fatalf("execute() error = %v, stdout = %q", err, stdout)
 	}
 }
 
