@@ -21,6 +21,9 @@ type HTTPError struct {
 	StatusCode int
 	Detail     string
 	Retryable  bool
+
+	loginExpired bool
+	retryAfter   string
 }
 
 func (e HTTPError) Error() string {
@@ -28,6 +31,13 @@ func (e HTTPError) Error() string {
 }
 
 func (e HTTPError) GoString() string { return e.Error() }
+
+func (e HTTPError) Unwrap() error {
+	if e.loginExpired {
+		return ErrLoginExpired
+	}
+	return nil
+}
 
 func (e HTTPError) Is(target error) bool {
 	want, ok := target.(HTTPError)
