@@ -261,6 +261,53 @@ func TestLoginTeamSelectionWithRealClient(t *testing.T) {
 	}
 }
 
+func TestLoginRejectsPollSecretBeforeTeamPrompt(t *testing.T) {
+	secret := "poll-secret-abc"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = fmt.Fprintf(w, `{"login_id":"login-1","poll_secret":%q,"user_code":"CODE","expires_in":60}`, secret)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"status":"ready","requires_team_selection":true,"team_details":[{"team_id":"team-1","team_alias":%q}]}`, "alias-"+secret)
+	}))
+	defer server.Close()
+	store := new(fakeStore)
+	deps, stdout, stderr := testDependencies(store)
+	deps.stdin = strings.NewReader("1\n")
+	deps.isTerminal = func() bool { return true }
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return litellmauth.New(server.URL, litellmauth.WithHTTPClient(server.Client()))
+	}
+
+	err := execute(context.Background(), []string{"login", "--no-browser"}, deps)
+	human := stdout.String() + stderr.String()
+	if !errors.Is(err, litellmauth.ErrProtocol) || strings.Contains(human, secret) || strings.Contains(human, "Select a team") {
+		t.Fatalf("execute() error = %v; output = %q", err, human)
+	}
+}
+
+func TestLoginRejectsCredentialKeyInMetadata(t *testing.T) {
+	store := new(fakeStore)
+	deps, stdout, stderr := testDependencies(store)
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return fakeClient{authenticate: func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
+			return litellmauth.Credential{
+				BaseURL:  "https://proxy.example.com",
+				Key:      "secret-key",
+				UserID:   "user-secret-key",
+				IssuedAt: testNow,
+			}, nil
+		}}, nil
+	}
+
+	err := execute(context.Background(), []string{"login", "--no-browser"}, deps)
+	human := stdout.String() + stderr.String()
+	if !errors.Is(err, litellmauth.ErrProtocol) || strings.Contains(human, "secret-key") || store.saved != nil {
+		t.Fatalf("execute() error = %v; output = %q; saved = %#v", err, human, store.saved)
+	}
+}
+
 func TestLoginSanitizesAllHumanOutput(t *testing.T) {
 	store := new(fakeStore)
 	deps, stdout, stderr := testDependencies(store)
@@ -458,6 +505,22 @@ func TestWhoamiUsesOnlyExplicitIssuer(t *testing.T) {
 				t.Fatalf("Load base = %v, want %q", store.loadBase, test.want)
 			}
 		})
+	}
+}
+
+func TestWhoamiRejectsCredentialKeyInMetadata(t *testing.T) {
+	store := &fakeStore{credential: litellmauth.Credential{
+		BaseURL:   "https://proxy.example.com",
+		Key:       "secret-key",
+		TeamAlias: "alias-secret-key",
+		IssuedAt:  testNow,
+	}}
+	deps, stdout, stderr := testDependencies(store)
+
+	err := execute(context.Background(), []string{"whoami"}, deps)
+	human := stdout.String() + stderr.String()
+	if !errors.Is(err, litellmauth.ErrProtocol) || strings.Contains(human, "secret-key") || stdout.Len() != 0 {
+		t.Fatalf("execute() error = %v; stdout = %q; stderr = %q", err, stdout, stderr)
 	}
 }
 

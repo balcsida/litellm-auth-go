@@ -234,6 +234,9 @@ func (d diskCredential) credential() (litellmauth.Credential, error) {
 	if credential.AttributionMetadata, err = parseMetadata(d.AttributionMetadata); err != nil {
 		return litellmauth.Credential{}, invalidFile()
 	}
+	if credentialMetadataContainsKey(credential) {
+		return litellmauth.Credential{}, invalidFile()
+	}
 	return credential, nil
 }
 
@@ -246,6 +249,9 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 		return savedCredential{}, invalidFile()
 	}
 	if _, err := parseMetadataValue(credential.AttributionMetadata); err != nil {
+		return savedCredential{}, invalidFile()
+	}
+	if credentialMetadataContainsKey(credential) {
 		return savedCredential{}, invalidFile()
 	}
 	saved := savedCredential{
@@ -275,6 +281,27 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 		saved.TeamAlias = credential.TeamAlias
 	}
 	return saved, nil
+}
+
+func credentialMetadataContainsKey(credential litellmauth.Credential) bool {
+	containsKey := func(value string) bool {
+		return credential.Key != "" && strings.Contains(value, credential.Key)
+	}
+	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
+		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) {
+		return true
+	}
+	for _, team := range credential.Teams {
+		if containsKey(team.ID) || containsKey(team.Alias) {
+			return true
+		}
+	}
+	for _, value := range credential.AttributionMetadata {
+		if text, ok := value.(string); ok && containsKey(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseTimestamp(raw json.RawMessage) (time.Time, error) {

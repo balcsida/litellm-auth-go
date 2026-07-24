@@ -164,11 +164,15 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var output bytes.Buffer
+			if err := printCredential(&output, "Authenticated", credential, deps.now()); err != nil {
+				return err
+			}
 			if err := store.Save(ctx, credential); err != nil {
 				return err
 			}
-			printCredential(deps.stdout, "Authenticated", credential, deps.now())
-			return nil
+			_, err = deps.stdout.Write(output.Bytes())
+			return err
 		},
 	}
 	command.Flags().BoolVar(&noBrowser, "no-browser", false, "do not open a browser")
@@ -213,8 +217,7 @@ func newWhoamiCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			printCredential(deps.stdout, "Authenticated", credential, deps.now())
-			return nil
+			return printCredential(deps.stdout, "Authenticated", credential, deps.now())
 		},
 	}
 }
@@ -327,7 +330,10 @@ func readLine(ctx context.Context, reader *bufio.Reader) (string, error) {
 	}
 }
 
-func printCredential(output io.Writer, heading string, credential litellmauth.Credential, now time.Time) {
+func printCredential(output io.Writer, heading string, credential litellmauth.Credential, now time.Time) error {
+	if !credentialSafeForOutput(credential) {
+		return litellmauth.ErrProtocol
+	}
 	fmt.Fprintln(output, heading)
 	fmt.Fprintf(output, "Base URL: %s\n", safe(credential.BaseURL))
 	fmt.Fprintf(output, "User ID: %s\n", safe(credential.UserID))
@@ -342,6 +348,31 @@ func printCredential(output io.Writer, heading string, credential litellmauth.Cr
 		status = "fresh"
 	}
 	fmt.Fprintf(output, "Status: %s\n", status)
+	return nil
+}
+
+func credentialSafeForOutput(credential litellmauth.Credential) bool {
+	if credential.AuthorizationHeader() == "" {
+		return false
+	}
+	containsKey := func(value string) bool {
+		return strings.Contains(value, credential.Key)
+	}
+	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
+		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) {
+		return false
+	}
+	for _, team := range credential.Teams {
+		if containsKey(team.ID) || containsKey(team.Alias) {
+			return false
+		}
+	}
+	for _, value := range credential.AttributionMetadata {
+		if text, ok := value.(string); ok && containsKey(text) {
+			return false
+		}
+	}
+	return true
 }
 
 func teamLabel(team litellmauth.Team) string {

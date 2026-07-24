@@ -157,6 +157,35 @@ func TestPollOnceRejectsInvalidSessionAndMetadata(t *testing.T) {
 	}
 }
 
+func TestPollOnceRejectsSecretsInOutwardMetadata(t *testing.T) {
+	secret := "poll-secret-abc"
+	key := "header.payload.signature"
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "selection team ID", body: `{"status":"ready","requires_team_selection":true,"teams":["team-` + secret + `"]}`},
+		{name: "selection team alias", body: `{"status":"ready","requires_team_selection":true,"team_details":[{"team_id":"team-1","team_alias":"alias-` + secret + `"}]}`},
+		{name: "key contains poll secret", body: `{"status":"ready","key":"key-` + secret + `"}`},
+		{name: "user ID", body: `{"status":"ready","key":"` + key + `","user_id":"user-` + key + `"}`},
+		{name: "selected team ID", body: `{"status":"ready","key":"` + key + `","team_id":"team-` + key + `","teams":["team-` + key + `"]}`},
+		{name: "selected team alias", body: `{"status":"ready","key":"` + key + `","team_id":"team-1","team_details":[{"team_id":"team-1","team_alias":"alias-` + key + `"}]}`},
+		{name: "attribution string", body: `{"status":"ready","key":"` + key + `","attribution_metadata":{"department":"dept-` + key + `"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := pollClient(t, test.body).PollOnce(context.Background(), pollSession(secret), "")
+			if !errors.Is(err, ErrProtocol) {
+				t.Fatalf("PollOnce() error = %v, want ErrProtocol", err)
+			}
+			for _, rendered := range []string{err.Error(), fmt.Sprintf("%#v", err)} {
+				if strings.Contains(rendered, secret) || strings.Contains(rendered, key) {
+					t.Fatalf("PollOnce() leaked a secret: %q", rendered)
+				}
+			}
+		})
+	}
+}
+
 func TestPollOnceClassifiesHTTPResponsesAndSanitizesDetail(t *testing.T) {
 	secret := "poll-secret-abc"
 	for _, test := range []struct {
@@ -715,6 +744,29 @@ func TestAwaitTeamRequiredAndEventsUseIndependentTeamCopies(t *testing.T) {
 	var teamErr *TeamRequiredError
 	if !errors.As(err, &teamErr) || eventCalls != 1 || len(teamErr.Teams) != 1 || teamErr.Teams[0].ID != "team-1" {
 		t.Fatalf("Await() error = %#v; event calls = %d", err, eventCalls)
+	}
+}
+
+func TestAwaitRejectsSecretContaminatedTeamsBeforeEvents(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	secret := "poll-secret-abc"
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-`+secret+`"]}`)
+	}))
+	session := awaitSession(clock)
+	session.pollSecret = secret
+	eventCalls, selectorCalls := 0, 0
+
+	_, err := client.Await(context.Background(), session, AwaitOptions{
+		OnEvent: func(Event) { eventCalls++ },
+		SelectTeam: func(context.Context, []Team) (string, error) {
+			selectorCalls++
+			return "", nil
+		},
+	})
+	if !errors.Is(err, ErrProtocol) || eventCalls != 0 || selectorCalls != 0 {
+		t.Fatalf("Await() error = %v; event calls = %d; selector calls = %d", err, eventCalls, selectorCalls)
 	}
 }
 

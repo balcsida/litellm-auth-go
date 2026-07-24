@@ -201,6 +201,32 @@ func TestFileStoreRejectsMalformedFiles(t *testing.T) {
 	}
 }
 
+func TestFileStoreRejectsCredentialKeyInMetadata(t *testing.T) {
+	t.Run("load", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "token.json")
+		store, _ := NewFileStore(path)
+		writeTokenFile(t, path, `{"key":"secret-key","user_id":"user-secret-key"}`)
+
+		if _, err := store.Load(context.Background(), nil); !errors.Is(err, litellmauth.ErrProtocol) {
+			t.Fatalf("Load() error = %v, want ErrProtocol", err)
+		}
+	})
+
+	t.Run("save", func(t *testing.T) {
+		path := filepath.Join(privateTempDir(t), "token.json")
+		store, _ := NewFileStore(path)
+		credential := validCredential("secret-key")
+		credential.AttributionMetadata = map[string]any{"department": "dept-secret-key"}
+
+		if err := store.Save(context.Background(), credential); !errors.Is(err, litellmauth.ErrProtocol) {
+			t.Fatalf("Save() error = %v, want ErrProtocol", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Save() wrote unsafe credential: %v", err)
+		}
+	})
+}
+
 func TestFileStoreRejectsOversizedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token.json")
 	store, _ := NewFileStore(path)

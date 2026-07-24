@@ -81,7 +81,7 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 	case string(PollPending):
 		return PollResult{Status: PollPending}, nil
 	case string(PollReady):
-		return c.readyPollResult(decoded)
+		return c.readyPollResult(decoded, session.pollSecret)
 	default:
 		return PollResult{}, protocolError(detail)
 	}
@@ -360,13 +360,19 @@ func pollErrorDetail(body []byte, secret string) string {
 	}, detail)
 }
 
-func (c *Client) readyPollResult(decoded pollResponse) (PollResult, error) {
+func (c *Client) readyPollResult(decoded pollResponse, pollSecret string) (PollResult, error) {
 	requiresSelection, err := pollRequiresSelection(decoded.RequiresTeamSelection)
 	if err != nil || (requiresSelection && decoded.Key != "") || (!requiresSelection && decoded.Key == "") || containsKeySpaceOrControl(decoded.Key) {
 		return PollResult{}, ErrProtocol
 	}
+	if stringContainsSecret(decoded.Key, pollSecret) {
+		return PollResult{}, ErrProtocol
+	}
 	teams, err := normalizePollTeams(decoded.TeamDetails, decoded.Teams)
 	if err != nil {
+		return PollResult{}, ErrProtocol
+	}
+	if teamsContainSecret(teams, pollSecret, decoded.Key) {
 		return PollResult{}, ErrProtocol
 	}
 	if !requiresSelection && decoded.TeamID == "" && len(teams) > 1 {
@@ -389,6 +395,9 @@ func (c *Client) readyPollResult(decoded pollResponse) (PollResult, error) {
 	if credential.TeamID == "" && len(teams) == 1 {
 		credential.TeamID = teams[0].ID
 	}
+	if credentialMetadataContainsSecret(credential, pollSecret, credential.Key) {
+		return PollResult{}, ErrProtocol
+	}
 	for _, team := range teams {
 		if team.ID == credential.TeamID {
 			credential.TeamAlias = team.Alias
@@ -399,6 +408,39 @@ func (c *Client) readyPollResult(decoded pollResponse) (PollResult, error) {
 		return PollResult{}, ErrProtocol
 	}
 	return PollResult{Status: PollReady, Credential: &credential, Teams: teams}, nil
+}
+
+func credentialMetadataContainsSecret(credential Credential, secrets ...string) bool {
+	if stringContainsSecret(credential.UserID, secrets...) ||
+		stringContainsSecret(credential.TeamID, secrets...) ||
+		stringContainsSecret(credential.TeamAlias, secrets...) ||
+		teamsContainSecret(credential.Teams, secrets...) {
+		return true
+	}
+	for _, value := range credential.AttributionMetadata {
+		if text, ok := value.(string); ok && stringContainsSecret(text, secrets...) {
+			return true
+		}
+	}
+	return false
+}
+
+func teamsContainSecret(teams []Team, secrets ...string) bool {
+	for _, team := range teams {
+		if stringContainsSecret(team.ID, secrets...) || stringContainsSecret(team.Alias, secrets...) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringContainsSecret(value string, secrets ...string) bool {
+	for _, secret := range secrets {
+		if secret != "" && strings.Contains(value, secret) {
+			return true
+		}
+	}
+	return false
 }
 
 func pollRequiresSelection(raw json.RawMessage) (bool, error) {
