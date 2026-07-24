@@ -28,6 +28,7 @@ type pollResponse struct {
 	AttributionMetadata   json.RawMessage `json:"attribution_metadata"`
 }
 
+// PollOnce obtains one polling result for session and an optional team ID.
 func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (PollResult, error) {
 	if session.LoginID == "" || session.pollSecret == "" {
 		return PollResult{}, ErrProtocol
@@ -86,6 +87,7 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 	}
 }
 
+// Await polls session until it returns a credential or expires.
 func (c *Client) Await(ctx context.Context, session Session, options AwaitOptions) (Credential, error) {
 	if session.LoginID == "" || session.pollSecret == "" || session.expiresAt.IsZero() {
 		return Credential{}, ErrProtocol
@@ -175,6 +177,7 @@ func (c *Client) Await(ctx context.Context, session Session, options AwaitOption
 	}
 }
 
+// Authenticate starts a session, invokes OnSession, then waits for a credential.
 func (c *Client) Authenticate(ctx context.Context, options AuthenticateOptions) (Credential, error) {
 	session, err := c.Start(ctx)
 	if err != nil {

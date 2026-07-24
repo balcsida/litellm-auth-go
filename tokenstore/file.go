@@ -21,12 +21,17 @@ import (
 
 const maxCredentialFileSize = 1 << 20
 
+// Store persists LiteLLM credentials.
 type Store interface {
+	// Load returns a credential, optionally requiring explicitBaseURL to match.
 	Load(context.Context, *url.URL) (litellmauth.Credential, error)
+	// Save securely persists a credential.
 	Save(context.Context, litellmauth.Credential) error
+	// Delete removes the persisted credential.
 	Delete(context.Context) error
 }
 
+// FileStore securely persists one credential file.
 type FileStore struct {
 	path string
 }
@@ -64,6 +69,7 @@ type teamDetail struct {
 	TeamAlias string `json:"team_alias,omitempty"`
 }
 
+// NewFileStore creates a FileStore. An empty path uses ~/.litellm/token.json.
 func NewFileStore(path string) (*FileStore, error) {
 	if path == "" {
 		home, err := os.UserHomeDir()
@@ -75,6 +81,7 @@ func NewFileStore(path string) (*FileStore, error) {
 	return &FileStore{path: filepath.Clean(path)}, nil
 }
 
+// Load returns the stored credential and verifies explicitBaseURL when non-nil.
 func (s *FileStore) Load(ctx context.Context, explicitBaseURL *url.URL) (litellmauth.Credential, error) {
 	if err := ctx.Err(); err != nil {
 		return litellmauth.Credential{}, err
@@ -126,6 +133,7 @@ func (s *FileStore) Load(ctx context.Context, explicitBaseURL *url.URL) (litellm
 	return credential, nil
 }
 
+// Save writes credential with private file permissions.
 func (s *FileStore) Save(ctx context.Context, credential litellmauth.Credential) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -187,6 +195,7 @@ func (s *FileStore) Save(ctx context.Context, credential litellmauth.Credential)
 	return nil
 }
 
+// Delete removes the credential file and succeeds when it is already absent.
 func (s *FileStore) Delete(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

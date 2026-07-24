@@ -12,8 +12,11 @@ const (
 	defaultRequestTimeout = 10 * time.Second
 )
 
+// Option configures a Client created by New.
 type Option func(*Client) error
 
+// New creates a Client for baseURL. HTTPS is required except for loopback
+// development URLs configured with WithAllowInsecureHTTP.
 func New(baseURL string, opts ...Option) (*Client, error) {
 	c := &Client{
 		baseURL:        baseURL,
@@ -40,6 +43,7 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// WithAllowInsecureHTTP permits non-loopback HTTP for development only.
 func WithAllowInsecureHTTP() Option {
 	return func(c *Client) error {
 		c.allowInsecureHTTP = true
@@ -47,6 +51,7 @@ func WithAllowInsecureHTTP() Option {
 	}
 }
 
+// WithHTTPClient uses client for LiteLLM requests.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) error {
 		if client == nil {
@@ -57,14 +62,17 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
+// WithMaxWait limits the total duration of one login session.
 func WithMaxWait(wait time.Duration) Option {
 	return withPositiveDuration("maximum wait", wait, func(c *Client, value time.Duration) { c.maxWait = value })
 }
 
+// WithPollInterval sets the delay between pending polling requests.
 func WithPollInterval(interval time.Duration) Option {
 	return withPositiveDuration("poll interval", interval, func(c *Client, value time.Duration) { c.pollInterval = value })
 }
 
+// WithRequestTimeout limits one HTTP request.
 func WithRequestTimeout(timeout time.Duration) Option {
 	return withPositiveDuration("request timeout", timeout, func(c *Client, value time.Duration) { c.requestTimeout = value })
 }

@@ -15,6 +15,7 @@ const (
 	credentialClockSkew = 30 * time.Second
 )
 
+// Fresh reports whether c is valid at now, with a small expiry safety margin.
 func (c Credential) Fresh(now time.Time) bool {
 	if expiresAt, ok := jwtExpiry(c.Key); ok {
 		return now.Add(credentialClockSkew).Before(expiresAt)
@@ -24,6 +25,7 @@ func (c Credential) Fresh(now time.Time) bool {
 		now.Add(credentialClockSkew).Before(c.IssuedAt.Add(credentialLifetime))
 }
 
+// AuthorizationHeader returns c as a valid Bearer authorization header.
 func (c Credential) AuthorizationHeader() string {
 	if c.Key == "" || containsKeySpaceOrControl(c.Key) {
 		return ""

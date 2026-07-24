@@ -7,31 +7,46 @@ import (
 )
 
 var (
+	// ErrUnsupportedProxy reports a proxy without the LiteLLM CLI SSO endpoints.
 	ErrUnsupportedProxy = errors.New("proxy does not support LiteLLM CLI SSO")
-	ErrProtocol         = errors.New("invalid LiteLLM CLI SSO response")
-	ErrLoginExpired     = errors.New("LiteLLM CLI login session expired")
-	ErrTeamRequired     = errors.New("team selection required")
-	ErrNoCredential     = errors.New("no stored LiteLLM credential")
-	ErrCredentialStale  = errors.New("stored LiteLLM credential is expired")
-	ErrOriginMismatch   = errors.New("stored credential belongs to a different LiteLLM proxy")
+	// ErrProtocol reports an invalid LiteLLM CLI SSO response.
+	ErrProtocol = errors.New("invalid LiteLLM CLI SSO response")
+	// ErrLoginExpired reports an expired LiteLLM CLI SSO session.
+	ErrLoginExpired = errors.New("LiteLLM CLI login session expired")
+	// ErrTeamRequired reports that a team must be selected to finish login.
+	ErrTeamRequired = errors.New("team selection required")
+	// ErrNoCredential reports that no stored credential exists.
+	ErrNoCredential = errors.New("no stored LiteLLM credential")
+	// ErrCredentialStale reports that a stored credential is expired.
+	ErrCredentialStale = errors.New("stored LiteLLM credential is expired")
+	// ErrOriginMismatch reports a credential issued by a different proxy URL.
+	ErrOriginMismatch = errors.New("stored credential belongs to a different LiteLLM proxy")
 )
 
+// HTTPError describes a non-successful LiteLLM CLI SSO response.
 type HTTPError struct {
-	Op         string
+	// Op is the SSO operation that returned the response.
+	Op string
+	// StatusCode is the HTTP status code.
 	StatusCode int
-	Detail     string
-	Retryable  bool
+	// Detail is safe response detail when supplied by the proxy.
+	Detail string
+	// Retryable reports whether the request can be retried.
+	Retryable bool
 
 	loginExpired bool
 	retryAfter   string
 }
 
+// Error returns a safe summary of the HTTP error.
 func (e HTTPError) Error() string {
 	return fmt.Sprintf("LiteLLM CLI SSO %s: HTTP %d", e.Op, e.StatusCode)
 }
 
+// GoString returns a safe summary of the HTTP error.
 func (e HTTPError) GoString() string { return e.Error() }
 
+// Unwrap returns ErrLoginExpired for expired login sessions.
 func (e HTTPError) Unwrap() error {
 	if e.loginExpired {
 		return ErrLoginExpired
@@ -39,6 +54,7 @@ func (e HTTPError) Unwrap() error {
 	return nil
 }
 
+// Is matches HTTP errors by operation, status code, and retryability.
 func (e HTTPError) Is(target error) bool {
 	want, ok := target.(HTTPError)
 	if !ok {
@@ -51,20 +67,27 @@ func (e HTTPError) Is(target error) bool {
 	return e.Op == want.Op && e.StatusCode == want.StatusCode && e.Retryable == want.Retryable
 }
 
+// TeamRequiredError contains the teams offered by a login session.
 type TeamRequiredError struct {
+	// Teams is the proxy-provided set of selectable teams.
 	Teams []Team
 }
 
+// Error returns ErrTeamRequired's message.
 func (e TeamRequiredError) Error() string { return ErrTeamRequired.Error() }
 
+// Unwrap returns ErrTeamRequired.
 func (e TeamRequiredError) Unwrap() error { return ErrTeamRequired }
 
+// LoginTimeoutError reports a session timeout.
 type LoginTimeoutError struct {
 	callerDeadline bool
 }
 
+// Error returns the timeout message.
 func (LoginTimeoutError) Error() string { return "LiteLLM CLI login timed out" }
 
+// Unwrap returns the applicable timeout and expiry errors.
 func (e LoginTimeoutError) Unwrap() []error {
 	if e.callerDeadline {
 		return []error{context.DeadlineExceeded}

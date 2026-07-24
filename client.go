@@ -27,6 +27,7 @@ type startResponse struct {
 	VerificationURIComplete string          `json:"verification_uri_complete"`
 }
 
+// Start creates a browser login session without opening a browser or polling.
 func (c *Client) Start(ctx context.Context) (Session, error) {
 	requestURL := c.startURL().String()
 	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
