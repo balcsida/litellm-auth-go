@@ -50,7 +50,7 @@ func normalizedOrigin(u *url.URL) (scheme, host string, ok bool) {
 		port = ""
 	}
 	if port == "" {
-		if strings.HasPrefix(u.Host, "[") {
+		if strings.Contains(hostname, ":") {
 			return scheme, "[" + hostname + "]", true
 		}
 		return scheme, hostname, true

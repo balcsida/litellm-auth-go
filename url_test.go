@@ -128,6 +128,22 @@ func TestVerificationURLMatchesEquivalentIPLiteralOrigin(t *testing.T) {
 	}
 }
 
+func TestMappedIPv6LoopbackUsesIPv4Origin(t *testing.T) {
+	client, err := New("http://[::ffff:127.0.0.1]/proxy")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if want := "http://127.0.0.1/proxy"; client.baseURL != want {
+		t.Fatalf("baseURL = %q, want %q", client.baseURL, want)
+	}
+	if want := "http://127.0.0.1/proxy/sso/cli/start"; client.startURL().String() != want {
+		t.Fatalf("startURL() = %q, want %q", client.startURL(), want)
+	}
+	if want := "http://127.0.0.1/verify"; client.verificationURL(want, "login-id", "poll-secret").String() != want {
+		t.Fatalf("verificationURL() = %q, want %q", client.verificationURL(want, "login-id", "poll-secret"), want)
+	}
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
