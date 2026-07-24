@@ -280,8 +280,8 @@ func TestFileStoreSaveSetsPrivateModes(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(context.Background(), nil); !errors.Is(err, litellmauth.ErrProtocol) {
-		t.Fatalf("Load() insecure directory error = %v, want ErrProtocol", err)
+	if got, err := store.Load(context.Background(), nil); err != nil || got.Key != "old" {
+		t.Fatalf("Load() from Python-compatible directory = %#v, %v", got, err)
 	}
 }
 
@@ -411,7 +411,7 @@ func TestNewFileStoreDefaultPath(t *testing.T) {
 	}
 }
 
-func TestFileStoreSaveDoesNotChangeExistingDirectoryMode(t *testing.T) {
+func TestFileStoreSaveAcceptsSafeExistingDirectoryMode(t *testing.T) {
 	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
 		t.Skip("Unix permission semantics")
 	}
@@ -420,8 +420,8 @@ func TestFileStoreSaveDoesNotChangeExistingDirectoryMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, _ := NewFileStore(filepath.Join(dir, "token.json"))
-	if err := store.Save(context.Background(), validCredential("key")); !errors.Is(err, litellmauth.ErrProtocol) {
-		t.Fatalf("Save() error = %v, want ErrProtocol", err)
+	if err := store.Save(context.Background(), validCredential("key")); err != nil {
+		t.Fatalf("Save() error = %v", err)
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -429,6 +429,44 @@ func TestFileStoreSaveDoesNotChangeExistingDirectoryMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Fatalf("Save() changed directory mode to %o", got)
+	}
+	fileInfo, err := os.Stat(filepath.Join(dir, "token.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("saved file mode = %o, want 600", got)
+	}
+}
+
+func TestFileStoreRejectsWritableDirectoryModes(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skip("Unix permission semantics")
+	}
+	for _, mode := range []os.FileMode{0o770, 0o777} {
+		t.Run(mode.String(), func(t *testing.T) {
+			loadPath := filepath.Join(t.TempDir(), "load", "token.json")
+			writeTokenFile(t, loadPath, `{"key":"sk-key"}`)
+			if err := os.Chmod(filepath.Dir(loadPath), mode); err != nil {
+				t.Fatal(err)
+			}
+			loadStore, _ := NewFileStore(loadPath)
+			if _, err := loadStore.Load(context.Background(), nil); !errors.Is(err, litellmauth.ErrProtocol) {
+				t.Fatalf("Load() error = %v, want ErrProtocol", err)
+			}
+
+			saveDir := filepath.Join(t.TempDir(), "save")
+			if err := os.Mkdir(saveDir, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(saveDir, mode); err != nil {
+				t.Fatal(err)
+			}
+			saveStore, _ := NewFileStore(filepath.Join(saveDir, "token.json"))
+			if err := saveStore.Save(context.Background(), validCredential("key")); !errors.Is(err, litellmauth.ErrProtocol) {
+				t.Fatalf("Save() error = %v, want ErrProtocol", err)
+			}
+		})
 	}
 }
 

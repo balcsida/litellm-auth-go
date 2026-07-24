@@ -475,7 +475,7 @@ func preparePrivateDirectory(path string) error {
 	if err != nil || !info.IsDir() {
 		return errors.New("create LiteLLM credential directory")
 	}
-	if unixPermissions() && info.Mode().Perm() != 0o700 {
+	if unixPermissions() && !safeDirectoryMode(info.Mode()) {
 		return invalidFile()
 	}
 	return nil
@@ -490,11 +490,13 @@ func checkPrivateModes(file *os.File, dir string) error {
 		return invalidFile()
 	}
 	dirInfo, err := os.Stat(dir)
-	if err != nil || dirInfo.Mode().Perm() != 0o700 {
+	if err != nil || !safeDirectoryMode(dirInfo.Mode()) {
 		return invalidFile()
 	}
 	return nil
 }
+
+func safeDirectoryMode(mode os.FileMode) bool { return mode.Perm()&0o022 == 0 }
 
 func syncDirectory(path string) error {
 	if !unixPermissions() {
