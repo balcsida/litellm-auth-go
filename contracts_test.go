@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -27,6 +28,26 @@ func TestHTTPErrorRedactsDetail(t *testing.T) {
 
 	if got := err.Error(); strings.Contains(got, secret) || strings.Contains(got, "key=") {
 		t.Fatalf("HTTP error leaked detail: %q", got)
+	}
+}
+
+func TestPublicFormattingRedactsCredentialAndHTTPSecrets(t *testing.T) {
+	key := "sk-credential-secret"
+	detail := "poll-secret-abc"
+	credential := Credential{Key: key}
+	httpErr := HTTPError{Op: "poll", StatusCode: http.StatusUnauthorized, Detail: detail}
+	poll := PollResult{Credential: &credential}
+
+	for _, got := range []string{
+		fmt.Sprintf("%v", credential),
+		fmt.Sprintf("%#v", credential),
+		fmt.Sprintf("%v", httpErr),
+		fmt.Sprintf("%#v", httpErr),
+		fmt.Sprintf("%#v", poll),
+	} {
+		if strings.Contains(got, key) || strings.Contains(got, detail) {
+			t.Fatalf("public formatting leaked a secret: %q", got)
+		}
 	}
 }
 
@@ -65,7 +86,7 @@ func TestOptionsValidateAndUseSafeDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if client.httpClient == nil || client.maxWait <= 0 || client.pollInterval <= 0 || client.requestTimeout <= 0 {
+	if client.httpClient == nil || client.maxWait != 10*time.Minute || client.pollInterval != 2*time.Second || client.requestTimeout != 10*time.Second {
 		t.Fatalf("unsafe defaults: %#v", client)
 	}
 
@@ -89,6 +110,9 @@ func TestOptionsValidateAndUseSafeDefaults(t *testing.T) {
 
 func TestCredentialJSONRejectsNonScalarAttributionMetadata(t *testing.T) {
 	var credential Credential
+	if err := json.Unmarshal([]byte(`{}`), &credential); err != nil {
+		t.Fatalf("json.Unmarshal() without metadata error = %v", err)
+	}
 	if err := json.Unmarshal([]byte(`{"attribution_metadata":{"department":"Engineering","active":true,"score":1}}`), &credential); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
@@ -97,6 +121,11 @@ func TestCredentialJSONRejectsNonScalarAttributionMetadata(t *testing.T) {
 	}
 
 	for _, raw := range []string{
+		`{"attribution_metadata":null}`,
+		`{"attribution_metadata":[]}`,
+		`{"attribution_metadata":"Engineering"}`,
+		`{"attribution_metadata":1}`,
+		`{"attribution_metadata":true}`,
 		`{"attribution_metadata":{"nested":{"team":"Engineering"}}}`,
 		`{"attribution_metadata":{"items":["Engineering"]}}`,
 		`{"attribution_metadata":{"missing":null}}`,

@@ -27,6 +27,8 @@ func (e HTTPError) Error() string {
 	return fmt.Sprintf("LiteLLM CLI SSO %s: HTTP %d", e.Op, e.StatusCode)
 }
 
+func (e HTTPError) GoString() string { return e.Error() }
+
 func (e HTTPError) Is(target error) bool {
 	want, ok := target.(HTTPError)
 	if !ok {

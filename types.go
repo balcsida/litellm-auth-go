@@ -66,20 +66,49 @@ type Credential struct {
 	ExpiresAt           time.Time      `json:"expires_at"`
 }
 
+func (Credential) String() string { return "LiteLLM credential" }
+
+func (c Credential) GoString() string { return c.String() }
+
 func (c *Credential) UnmarshalJSON(data []byte) error {
-	type credential Credential
-	var decoded credential
+	var decoded struct {
+		BaseURL             string          `json:"base_url"`
+		Key                 string          `json:"key"`
+		UserID              string          `json:"user_id"`
+		TeamID              string          `json:"team_id"`
+		TeamAlias           string          `json:"team_alias"`
+		Teams               []Team          `json:"teams"`
+		AttributionMetadata json.RawMessage `json:"attribution_metadata"`
+		IssuedAt            time.Time       `json:"issued_at"`
+		ExpiresAt           time.Time       `json:"expires_at"`
+	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	for _, value := range decoded.AttributionMetadata {
-		switch value.(type) {
-		case string, float64, bool:
-		default:
-			return fmt.Errorf("%w: attribution metadata must contain only scalar values", ErrProtocol)
+	var metadata map[string]any
+	if decoded.AttributionMetadata != nil {
+		if err := json.Unmarshal(decoded.AttributionMetadata, &metadata); err != nil || metadata == nil {
+			return fmt.Errorf("%w: attribution metadata must be an object of scalar values", ErrProtocol)
+		}
+		for _, value := range metadata {
+			switch value.(type) {
+			case string, float64, bool:
+			default:
+				return fmt.Errorf("%w: attribution metadata must contain only scalar values", ErrProtocol)
+			}
 		}
 	}
-	*c = Credential(decoded)
+	*c = Credential{
+		BaseURL:             decoded.BaseURL,
+		Key:                 decoded.Key,
+		UserID:              decoded.UserID,
+		TeamID:              decoded.TeamID,
+		TeamAlias:           decoded.TeamAlias,
+		Teams:               decoded.Teams,
+		AttributionMetadata: metadata,
+		IssuedAt:            decoded.IssuedAt,
+		ExpiresAt:           decoded.ExpiresAt,
+	}
 	return nil
 }
 
