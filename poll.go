@@ -141,15 +141,28 @@ func (c *Client) Await(ctx context.Context, session Session, options AwaitOption
 			}
 			teams := append([]Team(nil), result.Teams...)
 			emitEvent(options.OnEvent, Event{Kind: EventTeamsRequired, Attempt: attempt, Teams: teams})
+			now := c.now()
+			if err := awaitDeadline(ctx, session, now); err != nil {
+				return Credential{}, err
+			}
 			selected := options.TeamID
 			if selected == "" {
 				if options.SelectTeam == nil {
 					return Credential{}, &TeamRequiredError{Teams: append([]Team(nil), teams...)}
 				}
-				var err error
-				selected, err = options.SelectTeam(ctx, append([]Team(nil), teams...))
-				if err != nil {
+				selectorCtx, cancel := context.WithTimeout(ctx, session.expiresAt.Sub(now))
+				var selectErr error
+				selected, selectErr = options.SelectTeam(selectorCtx, append([]Team(nil), teams...))
+				selectorDeadlineErr := selectorCtx.Err()
+				cancel()
+				if err := awaitDeadline(ctx, session, c.now()); err != nil {
 					return Credential{}, err
+				}
+				if errors.Is(selectorDeadlineErr, context.DeadlineExceeded) {
+					return Credential{}, &LoginTimeoutError{}
+				}
+				if selectErr != nil {
+					return Credential{}, selectErr
 				}
 			}
 			if !offeredTeam(selected, teams) {
@@ -261,7 +274,7 @@ func retryDelay(err error, now time.Time, fallback time.Duration) time.Duration 
 		return fallback
 	}
 	if strings.IndexFunc(httpErr.retryAfter, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
-		if seconds, parseErr := strconv.ParseInt(httpErr.retryAfter, 10, 64); parseErr == nil {
+		if seconds, parseErr := strconv.ParseInt(httpErr.retryAfter, 10, 64); parseErr == nil && seconds > 0 {
 			if seconds > int64(time.Duration(1<<63-1)/time.Second) {
 				return time.Duration(1<<63 - 1)
 			}
@@ -269,7 +282,7 @@ func retryDelay(err error, now time.Time, fallback time.Duration) time.Duration 
 		}
 	}
 	if date, parseErr := http.ParseTime(httpErr.retryAfter); parseErr == nil {
-		if delay := date.Sub(now); delay >= 0 {
+		if delay := date.Sub(now); delay > 0 {
 			return delay
 		}
 	}

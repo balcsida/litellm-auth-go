@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -357,7 +358,7 @@ func TestAwaitUsesRetryAfterSecondsAndHTTPDates(t *testing.T) {
 	}{
 		{name: "seconds", retryAfter: "5", want: 5 * time.Second},
 		{name: "HTTP date", retryAfter: start.Add(4 * time.Second).Format(http.TimeFormat), want: 4 * time.Second},
-		{name: "zero", retryAfter: "0", want: 0},
+		{name: "zero", retryAfter: "0", want: 2 * time.Second},
 		{name: "invalid", retryAfter: "later", want: 2 * time.Second},
 		{name: "signed", retryAfter: "+5", want: 2 * time.Second},
 		{name: "negative", retryAfter: "-1", want: 2 * time.Second},
@@ -385,6 +386,36 @@ func TestAwaitUsesRetryAfterSecondsAndHTTPDates(t *testing.T) {
 			}
 			if event.Kind != EventRetrying || event.Attempt != 1 || event.StatusCode != http.StatusTooManyRequests || event.Err == nil {
 				t.Fatalf("event = %#v", event)
+			}
+		})
+	}
+}
+
+func TestAwaitAvoidsBusyLoopForImmediateRetryAfter(t *testing.T) {
+	start := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	for _, retryAfter := range []string{"0", start.Format(http.TimeFormat)} {
+		t.Run(retryAfter, func(t *testing.T) {
+			clock := &awaitClock{now: start, lifetime: 5 * time.Second}
+			attempts := 0
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				if attempts > 10 {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Retry-After", retryAfter)
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+
+			if _, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{}); !errors.Is(err, ErrLoginExpired) {
+				t.Fatalf("Await() error = %v", err)
+			}
+			if got := clock.waits; fmt.Sprint(got) != fmt.Sprint([]time.Duration{2 * time.Second, 2 * time.Second, time.Second}) {
+				t.Fatalf("waits = %v", got)
+			}
+			if attempts != 3 || !clock.Now().Equal(start.Add(5*time.Second)) {
+				t.Fatalf("attempts = %d; clock = %s", attempts, clock.Now())
 			}
 		})
 	}
@@ -554,6 +585,31 @@ func TestDefaultWaitStopsOnContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDefaultWaitInterruptsActiveTimer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	timerActive := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- defaultWait(&signalingContext{Context: ctx, doneCalled: timerActive}, time.Hour)
+	}()
+
+	select {
+	case <-timerActive:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("defaultWait did not start its timer")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("defaultWait() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("defaultWait did not interrupt its active timer")
+	}
+}
+
 func TestRetryablePollErrorClassification(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -659,6 +715,115 @@ func TestAwaitTeamRequiredAndEventsUseIndependentTeamCopies(t *testing.T) {
 	var teamErr *TeamRequiredError
 	if !errors.As(err, &teamErr) || eventCalls != 1 || len(teamErr.Teams) != 1 || teamErr.Teams[0].ID != "team-1" {
 		t.Fatalf("Await() error = %#v; event calls = %d", err, eventCalls)
+	}
+}
+
+func TestAwaitRechecksDeadlineAfterTeamsEvent(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		expire      bool
+		wantExpired bool
+	}{
+		{name: "caller cancellation"},
+		{name: "session expiry", expire: true, wantExpired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newAwaitClock(10 * time.Second)
+			session := awaitSession(clock)
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1"]}`)
+			}))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			selectorCalls := 0
+
+			_, err := client.Await(ctx, session, AwaitOptions{
+				OnEvent: func(Event) {
+					if test.expire {
+						clock.now = session.expiresAt
+					} else {
+						cancel()
+					}
+				},
+				SelectTeam: func(context.Context, []Team) (string, error) {
+					selectorCalls++
+					return "team-1", nil
+				},
+			})
+			if selectorCalls != 0 || !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) ||
+				errors.Is(err, ErrLoginExpired) != test.wantExpired {
+				t.Fatalf("Await() error = %#v; selector calls = %d", err, selectorCalls)
+			}
+		})
+	}
+}
+
+func TestAwaitBoundsSelectorContextByEarliestDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		lifetime      time.Duration
+		callerTimeout time.Duration
+		wantExpired   bool
+	}{
+		{name: "session", lifetime: 25 * time.Millisecond, wantExpired: true},
+		{name: "caller", lifetime: time.Second, callerTimeout: 100 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newAwaitClock(test.lifetime)
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1"]}`)
+			}))
+			ctx, cancel := context.WithCancel(context.Background())
+			if test.callerTimeout > 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), test.callerTimeout)
+			}
+			defer cancel()
+			done := make(chan error, 1)
+			selectorCalls := 0
+
+			go func() {
+				_, err := client.Await(ctx, awaitSession(clock), AwaitOptions{SelectTeam: func(ctx context.Context, _ []Team) (string, error) {
+					selectorCalls++
+					if _, ok := ctx.Deadline(); !ok {
+						return "", errors.New("selector context has no deadline")
+					}
+					<-ctx.Done()
+					return "", ctx.Err()
+				}})
+				done <- err
+			}()
+
+			select {
+			case err := <-done:
+				var timeout *LoginTimeoutError
+				if selectorCalls != 1 || !errors.As(err, &timeout) || !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrLoginExpired) != test.wantExpired {
+					t.Fatalf("Await() error = %#v; selector calls = %d", err, selectorCalls)
+				}
+			case <-time.After(time.Second):
+				cancel()
+				t.Fatal("Await did not interrupt the selector")
+			}
+		})
+	}
+}
+
+func TestAwaitRechecksDeadlineAfterSelectorReturns(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	session := awaitSession(clock)
+	sentinel := errors.New("selector error")
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1"]}`)
+	}))
+
+	_, err := client.Await(context.Background(), session, AwaitOptions{SelectTeam: func(context.Context, []Team) (string, error) {
+		clock.now = session.expiresAt
+		return "", sentinel
+	}})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLoginExpired) || errors.Is(err, sentinel) {
+		t.Fatalf("Await() error = %#v", err)
 	}
 }
 
@@ -788,6 +953,17 @@ type awaitClock struct {
 	now      time.Time
 	lifetime time.Duration
 	waits    []time.Duration
+}
+
+type signalingContext struct {
+	context.Context
+	doneCalled chan struct{}
+	once       sync.Once
+}
+
+func (c *signalingContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.doneCalled) })
+	return c.Context.Done()
 }
 
 func newAwaitClock(lifetime time.Duration) *awaitClock {
