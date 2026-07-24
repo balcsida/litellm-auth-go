@@ -2,6 +2,7 @@ package tokenstore
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -58,6 +59,9 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 		saved["timestamp"] != 1_784_800_000.123 {
 		t.Fatalf("saved compatibility fields = %#v", saved)
 	}
+	if _, ok := saved["expires_at"]; ok {
+		t.Fatalf("saved incompatible expires_at field: %#v", saved)
+	}
 	if got := saved["teams"].([]any); len(got) != 2 || got[0] != "team-1" || got[1] != "team-2" {
 		t.Fatalf("saved teams = %#v", got)
 	}
@@ -75,6 +79,9 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	}
 	if !got.IssuedAt.Equal(want.IssuedAt) {
 		t.Fatalf("IssuedAt = %s, want %s", got.IssuedAt, want.IssuedAt)
+	}
+	if wantExpiry := want.IssuedAt.Add(24 * time.Hour); !got.ExpiresAt.Equal(wantExpiry) {
+		t.Fatalf("ExpiresAt = %s, want %s", got.ExpiresAt, wantExpiry)
 	}
 	if len(got.Teams) != 2 || got.Teams[1] != want.Teams[1] {
 		t.Fatalf("Teams = %#v, want %#v", got.Teams, want.Teams)
@@ -167,6 +174,19 @@ func TestFileStoreLoadTimestampVariants(t *testing.T) {
 				t.Fatalf("IssuedAt = %s, Fresh() = %v", got.IssuedAt, got.Fresh(now))
 			}
 		})
+	}
+}
+
+func TestFileStoreLoadPopulatesJWTExpiry(t *testing.T) {
+	expiresAt := time.Unix(1_784_803_600, 0)
+	token := "header." + base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1784803600}`)) + ".signature"
+	path := filepath.Join(t.TempDir(), "token.json")
+	store, _ := NewFileStore(path)
+	writeTokenFile(t, path, `{"key":"`+token+`","timestamp":1784800000}`)
+
+	got, err := store.Load(context.Background(), nil)
+	if err != nil || !got.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("Load() = %#v, %v; expiry want %s", got, err, expiresAt)
 	}
 }
 

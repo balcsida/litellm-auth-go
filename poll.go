@@ -398,6 +398,7 @@ func (c *Client) readyPollResult(decoded pollResponse, pollSecret string) (PollR
 	}
 	credential.BaseURL = c.baseURL
 	credential.IssuedAt = c.now()
+	credential.ExpiresAt = credential.Expiry()
 	credential.Teams = teams
 	if credential.TeamID == "" && len(teams) == 1 {
 		credential.TeamID = teams[0].ID

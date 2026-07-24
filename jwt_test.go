@@ -69,6 +69,34 @@ func TestCredentialFreshFallsBackToTimestamp(t *testing.T) {
 	}
 }
 
+func TestCredentialFreshHonorsExpiresAt(t *testing.T) {
+	now := time.Unix(1_784_800_000, 0)
+	for _, test := range []struct {
+		name       string
+		credential Credential
+		fresh      bool
+	}{
+		{
+			name:       "explicit fresh",
+			credential: Credential{Key: "sk-key", ExpiresAt: now.Add(31 * time.Second)},
+			fresh:      true,
+		},
+		{
+			name: "explicit stale overrides JWT",
+			credential: Credential{
+				Key:       jwtWithPayload(fmt.Sprintf(`{"exp":%d}`, now.Add(time.Hour).Unix())),
+				ExpiresAt: now.Add(30 * time.Second),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.credential.Fresh(now); got != test.fresh {
+				t.Fatalf("Fresh() = %v, want %v", got, test.fresh)
+			}
+		})
+	}
+}
+
 func TestCredentialAuthorizationHeaderValidatesKey(t *testing.T) {
 	for _, test := range []struct {
 		name string

@@ -17,12 +17,30 @@ const (
 
 // Fresh reports whether c is valid at now, with a small expiry safety margin.
 func (c Credential) Fresh(now time.Time) bool {
-	if expiresAt, ok := jwtExpiry(c.Key); ok {
-		return now.Add(credentialClockSkew).Before(expiresAt)
+	expiresAt := c.Expiry()
+	if expiresAt.IsZero() {
+		return false
 	}
-	return !c.IssuedAt.IsZero() &&
-		!c.IssuedAt.After(now) &&
-		now.Add(credentialClockSkew).Before(c.IssuedAt.Add(credentialLifetime))
+	if !c.IssuedAt.IsZero() && c.IssuedAt.After(now) {
+		if _, ok := jwtExpiry(c.Key); !ok {
+			return false
+		}
+	}
+	return now.Add(credentialClockSkew).Before(expiresAt)
+}
+
+// Expiry returns the explicit, JWT, or compatibility expiry for c.
+func (c Credential) Expiry() time.Time {
+	if !c.ExpiresAt.IsZero() {
+		return c.ExpiresAt
+	}
+	if expiresAt, ok := jwtExpiry(c.Key); ok {
+		return expiresAt
+	}
+	if c.IssuedAt.IsZero() {
+		return time.Time{}
+	}
+	return c.IssuedAt.Add(credentialLifetime)
 }
 
 // AuthorizationHeader returns c as a valid Bearer authorization header.

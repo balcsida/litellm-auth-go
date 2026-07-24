@@ -95,6 +95,29 @@ func TestPollOnceParsesReadyCredentialAndTeams(t *testing.T) {
 	}
 }
 
+func TestPollOncePopulatesCredentialExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	jwtExpiresAt := now.Add(2 * time.Hour)
+	for _, test := range []struct {
+		name string
+		key  string
+		want time.Time
+	}{
+		{name: "JWT", key: jwtWithPayload(fmt.Sprintf(`{"exp":%d}`, jwtExpiresAt.Unix())), want: jwtExpiresAt},
+		{name: "fallback", key: "sk-key", want: now.Add(24 * time.Hour)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := pollClient(t, fmt.Sprintf(`{"status":"ready","key":%q}`, test.key))
+			client.now = func() time.Time { return now }
+
+			result, err := client.PollOnce(context.Background(), pollSession("secret"), "")
+			if err != nil || result.Credential == nil || !result.Credential.ExpiresAt.Equal(test.want) {
+				t.Fatalf("PollOnce() = %#v, %v; expiry want %s", result, err, test.want)
+			}
+		})
+	}
+}
+
 func TestPollOnceNormalizesTeamsAndSelection(t *testing.T) {
 	client := pollClient(t, `{"status":"ready","requires_team_selection":true,"team_details":[{"team_id":"team-1"},{"id":"team-1","team_alias":"Preferred"},{"id":"team-2","alias":"Second"}],"teams":[{"id":"team-2","alias":"Ignored"},"team-3","team-1"]}`)
 

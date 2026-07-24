@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -200,7 +202,8 @@ func newLogoutCommand(global *globalOptions, deps dependencies) *cobra.Command {
 }
 
 func newWhoamiCommand(global *globalOptions, deps dependencies) *cobra.Command {
-	return &cobra.Command{
+	var jsonOutput bool
+	command := &cobra.Command{
 		Use:   "whoami",
 		Short: "Show the stored credential identity",
 		Args:  cobra.NoArgs,
@@ -217,9 +220,14 @@ func newWhoamiCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if jsonOutput {
+				return printCredentialJSON(deps.stdout, credential, deps.now())
+			}
 			return printCredential(deps.stdout, "Authenticated", credential, deps.now())
 		},
 	}
+	command.Flags().BoolVar(&jsonOutput, "json", false, "print identity as JSON")
+	return command
 }
 
 func newPrintTokenCommand(global *globalOptions, deps dependencies) *cobra.Command {
@@ -343,12 +351,54 @@ func printCredential(output io.Writer, heading string, credential litellmauth.Cr
 	if !credential.IssuedAt.IsZero() {
 		fmt.Fprintf(output, "Issued: %s\n", credential.IssuedAt.Format(time.RFC3339))
 	}
+	if expiresAt := credential.Expiry(); !expiresAt.IsZero() {
+		fmt.Fprintf(output, "Expires: %s\n", expiresAt.Format(time.RFC3339))
+	}
 	status := "stale"
 	if credential.Fresh(now) {
 		status = "fresh"
 	}
 	fmt.Fprintf(output, "Status: %s\n", status)
 	return nil
+}
+
+func printCredentialJSON(output io.Writer, credential litellmauth.Credential, now time.Time) error {
+	if !credentialSafeForOutput(credential) {
+		return litellmauth.ErrProtocol
+	}
+	expiresAt := credential.Expiry()
+	identity := struct {
+		Authenticated       bool           `json:"authenticated"`
+		BaseURL             string         `json:"base_url"`
+		UserID              string         `json:"user_id"`
+		TeamID              string         `json:"team_id,omitempty"`
+		TeamAlias           string         `json:"team_alias,omitempty"`
+		IssuedAt            string         `json:"issued_at,omitempty"`
+		ExpiresAt           string         `json:"expires_at,omitempty"`
+		Fresh               bool           `json:"fresh"`
+		AttributionMetadata map[string]any `json:"attribution_metadata,omitempty"`
+	}{
+		Authenticated:       true,
+		BaseURL:             credential.BaseURL,
+		UserID:              credential.UserID,
+		TeamID:              credential.TeamID,
+		TeamAlias:           credential.TeamAlias,
+		Fresh:               credential.Fresh(now),
+		AttributionMetadata: credential.AttributionMetadata,
+	}
+	if !credential.IssuedAt.IsZero() {
+		identity.IssuedAt = credential.IssuedAt.Format(time.RFC3339)
+	}
+	if !expiresAt.IsZero() {
+		identity.ExpiresAt = expiresAt.Format(time.RFC3339)
+	}
+	data, err := json.Marshal(identity)
+	if err != nil {
+		return litellmauth.ErrProtocol
+	}
+	data = append(data, '\n')
+	_, err = output.Write(data)
+	return err
 }
 
 func credentialSafeForOutput(credential litellmauth.Credential) bool {
@@ -371,7 +421,17 @@ func credentialSafeForOutput(credential litellmauth.Credential) bool {
 		if containsKey(name) {
 			return false
 		}
-		if text, ok := value.(string); ok && containsKey(text) {
+		switch value := value.(type) {
+		case string:
+			if containsKey(value) {
+				return false
+			}
+		case float64:
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return false
+			}
+		case bool:
+		default:
 			return false
 		}
 	}

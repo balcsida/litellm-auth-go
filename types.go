@@ -95,7 +95,7 @@ type Credential struct {
 	AttributionMetadata map[string]any `json:"attribution_metadata"`
 	// IssuedAt is when the credential was received.
 	IssuedAt time.Time `json:"issued_at"`
-	// ExpiresAt is the explicit credential expiry when supplied.
+	// ExpiresAt is the credential expiry derived from the key or issue time.
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -145,6 +145,7 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		IssuedAt:            decoded.IssuedAt,
 		ExpiresAt:           decoded.ExpiresAt,
 	}
+	c.ExpiresAt = c.Expiry()
 	return nil
 }
 

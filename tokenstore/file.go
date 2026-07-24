@@ -228,6 +228,7 @@ func (d diskCredential) credential() (litellmauth.Credential, error) {
 	if credential.IssuedAt, err = parseTimestamp(d.Timestamp); err != nil {
 		return litellmauth.Credential{}, invalidFile()
 	}
+	credential.ExpiresAt = credential.Expiry()
 	if credential.Teams, err = parseTeams(d.Teams, d.TeamDetails, d.TeamID, d.TeamAlias); err != nil {
 		return litellmauth.Credential{}, invalidFile()
 	}

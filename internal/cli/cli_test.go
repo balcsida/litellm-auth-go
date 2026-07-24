@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -333,6 +334,18 @@ func TestLoginSanitizesAllHumanOutput(t *testing.T) {
 	}
 }
 
+func TestLoginPrintsCredentialExpiry(t *testing.T) {
+	store := new(fakeStore)
+	deps, stdout, _ := testDependencies(store)
+
+	if err := execute(context.Background(), []string{"login", "--no-browser"}, deps); err != nil {
+		t.Fatalf("execute() error = %v", err)
+	}
+	if want := "Expires: " + testNow.Add(24*time.Hour).Format(time.RFC3339); !strings.Contains(stdout.String(), want) {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
 func TestLoginVerboseEventsAreSafe(t *testing.T) {
 	store := new(fakeStore)
 	deps, _, stderr := testDependencies(store)
@@ -449,7 +462,7 @@ func TestWhoamiFreshStaleAndMissing(t *testing.T) {
 				BaseURL: "https://proxy.example.com", Key: "secret-key", UserID: "user-1",
 				TeamID: "team-1", TeamAlias: "Engineering", IssuedAt: testNow,
 			},
-			want: []string{"https://proxy.example.com", "user-1", "team-1", "Engineering", "fresh"},
+			want: []string{"https://proxy.example.com", "user-1", "team-1", "Engineering", testNow.Add(24 * time.Hour).Format(time.RFC3339), "fresh"},
 		},
 		{
 			name: "stale",
@@ -457,7 +470,7 @@ func TestWhoamiFreshStaleAndMissing(t *testing.T) {
 				BaseURL: "https://proxy.example.com", Key: "secret-key", UserID: "user-1",
 				IssuedAt: testNow.Add(-25 * time.Hour),
 			},
-			want: []string{"stale"},
+			want: []string{testNow.Add(-time.Hour).Format(time.RFC3339), "stale"},
 		},
 		{name: "missing", loadErr: litellmauth.ErrNoCredential, wantErr: litellmauth.ErrNoCredential, want: []string{"not authenticated"}},
 	} {
@@ -477,6 +490,74 @@ func TestWhoamiFreshStaleAndMissing(t *testing.T) {
 			}
 			if strings.Contains(human, "secret-key") {
 				t.Fatalf("whoami leaked key: %q", human)
+			}
+		})
+	}
+}
+
+func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
+	credential := successfulCredential()
+	credential.TeamID = "team-1"
+	credential.TeamAlias = "Engineering"
+	credential.ExpiresAt = testNow.Add(time.Hour)
+	credential.AttributionMetadata = map[string]any{
+		"department": "Platform",
+		"active":     true,
+		"score":      float64(1),
+	}
+
+	humanStore := &fakeStore{credential: credential}
+	humanDeps, humanStdout, _ := testDependencies(humanStore)
+	if err := execute(context.Background(), []string{"whoami"}, humanDeps); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(humanStdout.String(), "Platform") || strings.Contains(humanStdout.String(), "department") {
+		t.Fatalf("human whoami exposed attribution metadata: %q", humanStdout)
+	}
+
+	jsonStore := &fakeStore{credential: credential}
+	jsonDeps, stdout, stderr := testDependencies(jsonStore)
+	if err := execute(context.Background(), []string{"whoami", "--json"}, jsonDeps); err != nil {
+		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
+	}
+	if strings.Contains(stdout.String(), credential.Key) || stderr.Len() != 0 {
+		t.Fatalf("unsafe JSON output: stdout=%q stderr=%q", stdout, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %q: %v", stdout, err)
+	}
+	if _, ok := got["key"]; ok || got["authenticated"] != true || got["fresh"] != true ||
+		got["base_url"] != credential.BaseURL || got["user_id"] != credential.UserID ||
+		got["team_id"] != credential.TeamID || got["team_alias"] != credential.TeamAlias ||
+		got["issued_at"] != credential.IssuedAt.Format(time.RFC3339) ||
+		got["expires_at"] != credential.ExpiresAt.Format(time.RFC3339) {
+		t.Fatalf("JSON identity = %#v", got)
+	}
+	metadata, ok := got["attribution_metadata"].(map[string]any)
+	if !ok || metadata["department"] != "Platform" || metadata["active"] != true || metadata["score"] != float64(1) {
+		t.Fatalf("JSON metadata = %#v", got["attribution_metadata"])
+	}
+}
+
+func TestWhoamiJSONRejectsUnsafeMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		metadata map[string]any
+	}{
+		{name: "secret key", metadata: map[string]any{"field-secret-key": "safe"}},
+		{name: "secret value", metadata: map[string]any{"field": "value-secret-key"}},
+		{name: "nested value", metadata: map[string]any{"field": map[string]any{"nested": true}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credential := successfulCredential()
+			credential.AttributionMetadata = test.metadata
+			store := &fakeStore{credential: credential}
+			deps, stdout, stderr := testDependencies(store)
+
+			err := execute(context.Background(), []string{"whoami", "--json"}, deps)
+			if !errors.Is(err, litellmauth.ErrProtocol) || stdout.Len() != 0 || strings.Contains(stderr.String(), credential.Key) {
+				t.Fatalf("execute() error = %v; stdout = %q; stderr = %q", err, stdout, stderr)
 			}
 		})
 	}
