@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -74,7 +75,7 @@ func (c *Client) Start(ctx context.Context) (Session, error) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return Session{}, protocolError(detail)
 	}
-	if decoded.LoginID == "" || decoded.PollSecret == "" || decoded.UserCode == "" {
+	if decoded.LoginID == "" || decoded.PollSecret == "" || decoded.UserCode == "" || strings.Contains(decoded.LoginID, decoded.PollSecret) || strings.Contains(decoded.UserCode, decoded.PollSecret) {
 		return Session{}, protocolError(detail)
 	}
 	expiresIn, err := c.startExpiry(decoded.ExpiresIn)

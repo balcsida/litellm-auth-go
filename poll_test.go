@@ -37,6 +37,38 @@ func TestPollOnceSendsOneSafeRequest(t *testing.T) {
 	}
 }
 
+func TestPollOnceRejectsPollSecretInConstructedURL(t *testing.T) {
+	secret := "poll-secret-abc"
+	for _, test := range []struct {
+		name    string
+		session Session
+		teamID  string
+	}{
+		{name: "login ID", session: Session{LoginID: "prefix-" + secret, pollSecret: secret}},
+		{name: "team ID", session: pollSession(secret), teamID: "prefix-" + secret},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return nil, errors.New("must not send")
+			})}))
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			_, err = client.PollOnce(context.Background(), test.session, test.teamID)
+			if !errors.Is(err, ErrProtocol) || calls != 0 {
+				t.Fatalf("PollOnce() error = %v, calls = %d", err, calls)
+			}
+			for _, rendered := range []string{err.Error(), fmt.Sprintf("%#v", err)} {
+				if strings.Contains(rendered, secret) {
+					t.Fatalf("PollOnce() leaked poll secret: %q", rendered)
+				}
+			}
+		})
+	}
+}
+
 func TestPollOnceParsesReadyCredentialAndTeams(t *testing.T) {
 	client := pollClient(t, `{"status":"ready","key":"sk-key","user_id":"user-1","team_id":"team-2","team_details":[{"team_id":"team-1","team_alias":"First"},{"id":"team-2","team_alias":"Second"}],"teams":["team-2","team-3"],"attribution_metadata":{"department":"Engineering","active":true,"score":1}}`)
 	clock := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
@@ -82,6 +114,7 @@ func TestPollOnceAssignsOnlyTeamAndRejectsInvalidReadyShapes(t *testing.T) {
 		{name: "selection no teams", body: `{"status":"ready","requires_team_selection":true}`, wantErr: true},
 		{name: "neither", body: `{"status":"ready"}`, wantErr: true},
 		{name: "team mismatch", body: `{"status":"ready","key":"sk-key","team_id":"team-2","teams":["team-1"]}`, wantErr: true},
+		{name: "multiple teams without team ID", body: `{"status":"ready","key":"sk-key","teams":["team-1","team-2"]}`, wantErr: true},
 		{name: "key unicode whitespace", body: `{"status":"ready","key":"sk-key\u00a0"}`, wantErr: true},
 		{name: "key control", body: `{"status":"ready","key":"sk-key\u0000"}`, wantErr: true},
 	} {
@@ -159,6 +192,57 @@ func TestPollOnceClassifiesHTTPResponsesAndSanitizesDetail(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPollOnceClassifiesHTTPReadFailuresWithoutBodyDetails(t *testing.T) {
+	secret := "poll-secret-abc"
+	for _, test := range []struct {
+		status    int
+		retryable bool
+		expired   bool
+	}{
+		{status: http.StatusNotFound, expired: true},
+		{status: http.StatusServiceUnavailable, retryable: true},
+	} {
+		t.Run(http.StatusText(test.status), func(t *testing.T) {
+			bodyErr := errors.New("partial " + secret)
+			client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: test.status, Header: http.Header{"Content-Type": {"application/json"}}, Body: &errorBody{body: `{"detail":"` + secret + `"}`, err: bodyErr}, Request: req}, nil
+			})}))
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			err = pollError(t, client, pollSession(secret))
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.Retryable != test.retryable || errors.Is(err, bodyErr) || errors.Is(err, ErrLoginExpired) != test.expired || httpErr.Detail != "" {
+				t.Fatalf("PollOnce() error = %#v", err)
+			}
+			for _, rendered := range []string{err.Error(), fmt.Sprintf("%#v", err)} {
+				if strings.Contains(rendered, secret) || strings.Contains(rendered, "partial") {
+					t.Fatalf("PollOnce() leaked partial response: %q", rendered)
+				}
+			}
+		})
+	}
+}
+
+func TestPollOnceSanitizesProtocolDiagnostics(t *testing.T) {
+	secret := "poll-secret-abc"
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/"+secret)
+		_, _ = io.WriteString(w, `{"status":"pending"}`)
+	}))
+	defer server.Close()
+
+	_, err := pollClient(t, server.URL).PollOnce(context.Background(), pollSession(secret), "")
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("PollOnce() error = %v, want ErrProtocol", err)
+	}
+	for _, rendered := range []string{err.Error(), fmt.Sprintf("%#v", err)} {
+		if strings.Contains(rendered, secret) {
+			t.Fatalf("PollOnce() leaked protocol diagnostic: %q", rendered)
+		}
 	}
 }
 

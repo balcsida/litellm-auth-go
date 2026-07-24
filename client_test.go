@@ -101,6 +101,24 @@ func TestStartRejectsInvalidRequiredFieldsAndExpiry(t *testing.T) {
 	}
 }
 
+func TestStartRejectsPublicFieldsContainingPollSecret(t *testing.T) {
+	secret := "poll-secret-abc"
+	for _, body := range []string{
+		`{"login_id":"prefix-` + secret + `","poll_secret":"` + secret + `","user_code":"CODE"}`,
+		`{"login_id":"login","poll_secret":"` + secret + `","user_code":"prefix-` + secret + `"}`,
+	} {
+		_, err := startClient(t, body).Start(context.Background())
+		if !errors.Is(err, ErrProtocol) {
+			t.Fatalf("Start() error = %v, want ErrProtocol", err)
+		}
+		for _, rendered := range []string{err.Error(), fmt.Sprintf("%#v", err)} {
+			if strings.Contains(rendered, secret) {
+				t.Fatalf("Start() leaked poll secret: %q", rendered)
+			}
+		}
+	}
+}
+
 func TestStartCapsExpiryAndCapturesAbsoluteDeadline(t *testing.T) {
 	client := startClient(t, `{"login_id":"login","poll_secret":"secret","user_code":"CODE","expires_in":3600}`)
 	client.maxWait = 20 * time.Second

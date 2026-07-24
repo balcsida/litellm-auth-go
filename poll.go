@@ -27,7 +27,11 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 	if session.LoginID == "" || session.pollSecret == "" {
 		return PollResult{}, ErrProtocol
 	}
-	requestURL := c.pollURL(session.LoginID, teamID).String()
+	pollURL := c.pollURL(session.LoginID, teamID)
+	requestURL := pollURL.String()
+	if containsPollSecret(requestURL, pollURL, session.pollSecret) {
+		return PollResult{}, ErrProtocol
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
@@ -52,11 +56,12 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 	defer response.Body.Close()
 
 	body, detail, oversized, readErr := readStartResponse(response)
+	detail = strings.ReplaceAll(detail, session.pollSecret, "[redacted]")
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return PollResult{}, pollHTTPError(response, body, oversized || readErr != nil, session.pollSecret)
+	}
 	if readErr != nil {
 		return PollResult{}, protocolReadError("poll", readErr)
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return PollResult{}, pollHTTPError(response, body, oversized, session.pollSecret)
 	}
 	if oversized || responseContentType(response) != "application/json" {
 		return PollResult{}, protocolError(detail)
@@ -117,6 +122,9 @@ func (c *Client) readyPollResult(decoded pollResponse) (PollResult, error) {
 	}
 	teams, err := normalizePollTeams(decoded.TeamDetails, decoded.Teams)
 	if err != nil {
+		return PollResult{}, ErrProtocol
+	}
+	if !requiresSelection && decoded.TeamID == "" && len(teams) > 1 {
 		return PollResult{}, ErrProtocol
 	}
 	if requiresSelection {
