@@ -86,7 +86,10 @@ func (s *FileStore) Load(ctx context.Context, explicitBaseURL *url.URL) (litellm
 	if err := ctx.Err(); err != nil {
 		return litellmauth.Credential{}, err
 	}
-	file, err := os.Open(s.path)
+	file, err := openCredentialFile(ctx, s.path)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return litellmauth.Credential{}, err
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return litellmauth.Credential{}, litellmauth.ErrNoCredential
 	}
@@ -186,7 +189,10 @@ func (s *FileStore) Save(ctx context.Context, credential litellmauth.Credential)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, s.path); err != nil {
+	if err := replaceCredentialFile(ctx, tempPath, s.path); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return errors.New("replace stored LiteLLM credential")
 	}
 	if err := syncDirectory(dir); err != nil {
