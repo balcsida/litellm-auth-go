@@ -21,6 +21,7 @@ func New(baseURL string, opts ...Option) (*Client, error) {
 		maxWait:        defaultMaxWait,
 		pollInterval:   defaultPollInterval,
 		requestTimeout: defaultRequestTimeout,
+		now:            time.Now,
 	}
 	for _, option := range opts {
 		if option == nil {

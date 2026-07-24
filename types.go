@@ -16,6 +16,7 @@ type Client struct {
 	maxWait           time.Duration
 	pollInterval      time.Duration
 	requestTimeout    time.Duration
+	now               func() time.Time
 }
 
 type Session struct {
