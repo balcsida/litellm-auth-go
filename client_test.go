@@ -3,6 +3,7 @@ package litellmauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -194,6 +195,31 @@ func TestStartRejectsPartialResponseWithoutLeakingBody(t *testing.T) {
 	}
 }
 
+func TestStartRedactsResponseReadErrors(t *testing.T) {
+	sentinel := errors.New("do-not-leak")
+	client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       &errorBody{body: `{"login_id":"login","poll_secret":"secret","user_code":"CODE"}`, err: sentinel},
+			Request:    req,
+		}, nil
+	})}))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = client.Start(context.Background())
+	if !errors.Is(err, ErrProtocol) || !errors.Is(err, sentinel) {
+		t.Fatalf("Start() error = %v", err)
+	}
+	for _, got := range []string{err.Error(), fmt.Sprintf("%#v", err)} {
+		if strings.Contains(got, "do-not-leak") {
+			t.Fatalf("Start() leaked response read error: %q", got)
+		}
+	}
+}
+
 func TestStartRejectsRedirectAndKeepsTransportErrorsSafe(t *testing.T) {
 	redirect := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://example.com/do-not-leak", http.StatusFound)
@@ -266,3 +292,23 @@ func startClient(t *testing.T, body string, opts ...startServerOption) *Client {
 }
 
 func serverURL(r *http.Request) string { return "http://" + r.Host }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type errorBody struct {
+	body string
+	err  error
+	done bool
+}
+
+func (b *errorBody) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	b.done = true
+	return copy(p, b.body), b.err
+}
+
+func (*errorBody) Close() error { return nil }

@@ -64,7 +64,7 @@ func (c *Client) Start(ctx context.Context) (Session, error) {
 		}
 	}
 	if readErr != nil {
-		return Session{}, protocolReadError(detail, readErr)
+		return Session{}, protocolReadError(readErr)
 	}
 	if oversized || responseContentType(response) != "application/json" {
 		return Session{}, protocolError(detail)
@@ -124,6 +124,14 @@ func responseContentType(response *http.Response) string {
 
 func protocolError(detail string) error { return fmt.Errorf("%w: %s", ErrProtocol, detail) }
 
-func protocolReadError(detail string, err error) error {
-	return fmt.Errorf("%w: %s: %w", ErrProtocol, detail, err)
+func protocolReadError(err error) error { return startResponseReadError{err: err} }
+
+type startResponseReadError struct{ err error }
+
+func (startResponseReadError) Error() string {
+	return "LiteLLM CLI SSO start response body read failed"
 }
+
+func (e startResponseReadError) GoString() string { return e.Error() }
+
+func (e startResponseReadError) Unwrap() []error { return []error{ErrProtocol, e.err} }
