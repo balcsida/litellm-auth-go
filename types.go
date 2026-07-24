@@ -17,6 +17,7 @@ type Client struct {
 	pollInterval      time.Duration
 	requestTimeout    time.Duration
 	now               func() time.Time
+	wait              func(context.Context, time.Duration) error
 }
 
 type Session struct {

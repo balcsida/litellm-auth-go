@@ -2,11 +2,15 @@ package litellmauth
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -283,6 +287,554 @@ func TestPollOnceRejectsRedirectAndHonorsContext(t *testing.T) {
 	if _, err := pollClient(t, `{"status":"pending"}`).PollOnce(ctx, pollSession("secret"), ""); !errors.Is(err, context.Canceled) {
 		t.Fatalf("PollOnce() context error = %v", err)
 	}
+}
+
+func TestAwaitPollsPendingThenReturnsReadyWithoutReusingSession(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	attempts := 0
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		if attempts == 1 {
+			_, _ = io.WriteString(w, `{"status":"pending"}`)
+			return
+		}
+		if attempts > 2 {
+			t.Fatal("Await reused a completed session")
+		}
+		_, _ = io.WriteString(w, `{"status":"ready","key":"sk-key"}`)
+	}))
+	var events []Event
+
+	credential, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{
+		OnEvent: func(event Event) { events = append(events, event) },
+	})
+	if err != nil || credential.Key != "sk-key" || attempts != 2 {
+		t.Fatalf("Await() = %#v, %v; attempts = %d", credential, err, attempts)
+	}
+	if len(events) != 1 || events[0].Kind != EventPending || events[0].Attempt != 1 {
+		t.Fatalf("events = %#v", events)
+	}
+	if got := clock.waits; len(got) != 1 || got[0] != 2*time.Second {
+		t.Fatalf("waits = %v", got)
+	}
+}
+
+func TestAwaitRetriesTransientTransportErrorWithSafeEvent(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	attempts := 0
+	secret := "transport-secret"
+	client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: fmt.Errorf("%s: %w", secret, syscall.ECONNRESET)}
+		}
+		return pollResponseFor(req, http.StatusOK, `{"status":"ready","key":"sk-key"}`, nil), nil
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now, client.wait = clock.Now, clock.Wait
+	var event Event
+
+	credential, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{
+		OnEvent: func(got Event) { event = got },
+	})
+	if err != nil || credential.Key != "sk-key" || attempts != 2 {
+		t.Fatalf("Await() = %#v, %v; attempts = %d", credential, err, attempts)
+	}
+	if event.Kind != EventRetrying || event.Attempt != 1 || event.StatusCode != 0 || event.Err == nil || strings.Contains(fmt.Sprintf("%#v", event.Err), secret) {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestAwaitUsesRetryAfterSecondsAndHTTPDates(t *testing.T) {
+	start := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		retryAfter string
+		want       time.Duration
+	}{
+		{name: "seconds", retryAfter: "5", want: 5 * time.Second},
+		{name: "HTTP date", retryAfter: start.Add(4 * time.Second).Format(http.TimeFormat), want: 4 * time.Second},
+		{name: "zero", retryAfter: "0", want: 0},
+		{name: "invalid", retryAfter: "later", want: 2 * time.Second},
+		{name: "signed", retryAfter: "+5", want: 2 * time.Second},
+		{name: "negative", retryAfter: "-1", want: 2 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := &awaitClock{now: start, lifetime: 10 * time.Second}
+			attempts := 0
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				if attempts == 1 {
+					w.Header().Set("Retry-After", test.retryAfter)
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				_, _ = io.WriteString(w, `{"status":"ready","key":"sk-key"}`)
+			}))
+			var event Event
+
+			if _, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{OnEvent: func(got Event) { event = got }}); err != nil {
+				t.Fatalf("Await() error = %v", err)
+			}
+			if len(clock.waits) != 1 || clock.waits[0] != test.want {
+				t.Fatalf("waits = %v, want %s", clock.waits, test.want)
+			}
+			if event.Kind != EventRetrying || event.Attempt != 1 || event.StatusCode != http.StatusTooManyRequests || event.Err == nil {
+				t.Fatalf("event = %#v", event)
+			}
+		})
+	}
+}
+
+func TestRetryDelayBoundsHugeSeconds(t *testing.T) {
+	delay := retryDelay(&HTTPError{retryAfter: "9223372036854775807"}, time.Time{}, time.Second)
+	if delay <= 0 {
+		t.Fatalf("retryDelay() = %s", delay)
+	}
+}
+
+func TestAwaitClampsRetryDelayAndRequestTimeoutToAbsoluteExpiry(t *testing.T) {
+	clock := newAwaitClock(3 * time.Second)
+	attempts := 0
+	client, err := New("https://gateway.example.com", WithRequestTimeout(time.Minute), WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) > 3100*time.Millisecond {
+			t.Fatalf("request deadline = %v, %v", deadline, ok)
+		}
+		return pollResponseFor(r, http.StatusServiceUnavailable, "", http.Header{"Retry-After": {"99"}}), nil
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now, client.wait = clock.Now, clock.Wait
+	session := awaitSession(clock)
+	session.ExpiresIn = time.Hour
+
+	_, err = client.Await(context.Background(), session, AwaitOptions{})
+	var timeout *LoginTimeoutError
+	if !errors.As(err, &timeout) || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLoginExpired) || attempts != 1 {
+		t.Fatalf("Await() error = %#v; attempts = %d", err, attempts)
+	}
+	if len(clock.waits) != 1 || clock.waits[0] != 3*time.Second {
+		t.Fatalf("waits = %v", clock.waits)
+	}
+}
+
+func TestAwaitRetries5xxUntilSessionExpires(t *testing.T) {
+	clock := newAwaitClock(5 * time.Second)
+	attempts := 0
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+
+	_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLoginExpired) || attempts != 3 {
+		t.Fatalf("Await() error = %v; attempts = %d", err, attempts)
+	}
+	if got := clock.waits; fmt.Sprint(got) != fmt.Sprint([]time.Duration{2 * time.Second, 2 * time.Second, time.Second}) {
+		t.Fatalf("waits = %v", got)
+	}
+}
+
+func TestAwaitStopsOnPermanentHTTPAndProtocolErrors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "forbidden", status: http.StatusForbidden, body: `{"detail":"denied"}`},
+		{name: "malformed JSON", status: http.StatusOK, body: `{`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newAwaitClock(10 * time.Second)
+			attempts := 0
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{})
+			if err == nil || attempts != 1 || len(clock.waits) != 0 {
+				t.Fatalf("Await() error = %v; attempts = %d; waits = %v", err, attempts, clock.waits)
+			}
+		})
+	}
+}
+
+func TestAwaitDistinguishesCancellationCallerDeadlineAndSessionExpiry(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected request")
+	}))
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := client.Await(canceled, awaitSession(clock), AwaitOptions{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Await() error = %v", err)
+	}
+
+	deadline, stop := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer stop()
+	_, err := client.Await(deadline, awaitSession(clock), AwaitOptions{})
+	var timeout *LoginTimeoutError
+	if !errors.As(err, &timeout) || !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrLoginExpired) {
+		t.Fatalf("caller deadline Await() error = %#v", err)
+	}
+
+	session := awaitSession(clock)
+	session.expiresAt = clock.Now()
+	_, err = client.Await(context.Background(), session, AwaitOptions{})
+	if !errors.As(err, &timeout) || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLoginExpired) {
+		t.Fatalf("expired Await() error = %#v", err)
+	}
+}
+
+func TestAwaitRejectsReadyResponseCompletedAtSessionExpiry(t *testing.T) {
+	clock := newAwaitClock(3 * time.Second)
+	session := awaitSession(clock)
+	client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		clock.now = session.expiresAt
+		return pollResponseFor(req, http.StatusOK, `{"status":"ready","key":"sk-key"}`, nil), nil
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now, client.wait = clock.Now, clock.Wait
+
+	_, err = client.Await(context.Background(), session, AwaitOptions{})
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrLoginExpired) {
+		t.Fatalf("Await() error = %#v", err)
+	}
+}
+
+func TestAwaitUsesEarliestElapsedDeadlineIdentity(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name          string
+		sessionExpiry time.Time
+		callerExpiry  time.Time
+		wantExpired   bool
+	}{
+		{name: "session first", sessionExpiry: now.Add(-2 * time.Second), callerExpiry: now.Add(-time.Second), wantExpired: true},
+		{name: "caller first", sessionExpiry: now.Add(-time.Second), callerExpiry: now.Add(-2 * time.Second), wantExpired: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := &awaitClock{now: now, lifetime: time.Minute}
+			client, err := New("https://gateway.example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.now, client.wait = clock.Now, clock.Wait
+			session := awaitSession(clock)
+			session.expiresAt = test.sessionExpiry
+			ctx, cancel := context.WithDeadline(context.Background(), test.callerExpiry)
+			defer cancel()
+
+			_, err = client.Await(ctx, session, AwaitOptions{})
+			var timeout *LoginTimeoutError
+			if !errors.As(err, &timeout) || !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrLoginExpired) != test.wantExpired {
+				t.Fatalf("Await() error = %#v, expired = %v", err, errors.Is(err, ErrLoginExpired))
+			}
+		})
+	}
+}
+
+func TestDefaultWaitStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := defaultWait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("defaultWait() error = %v", err)
+	}
+}
+
+func TestRetryablePollErrorClassification(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "429", err: &HTTPError{StatusCode: http.StatusTooManyRequests, Retryable: true}, want: true},
+		{name: "500", err: &HTTPError{StatusCode: http.StatusInternalServerError, Retryable: true}, want: true},
+		{name: "400", err: &HTTPError{StatusCode: http.StatusBadRequest}, want: false},
+		{name: "timeout", err: transportError{err: context.DeadlineExceeded}, want: true},
+		{name: "temporary DNS", err: transportError{err: &net.DNSError{IsTemporary: true}}, want: true},
+		{name: "permanent DNS", err: transportError{err: &net.DNSError{Name: "missing.invalid"}}, want: false},
+		{name: "connection reset", err: transportError{err: syscall.ECONNRESET}, want: true},
+		{name: "connection refused", err: transportError{err: syscall.ECONNREFUSED}, want: true},
+		{name: "EOF", err: transportError{err: io.EOF}, want: true},
+		{name: "certificate", err: transportError{err: x509.UnknownAuthorityError{}}, want: false},
+		{name: "protocol EOF", err: responseReadError{op: "poll", err: io.EOF}, want: false},
+		{name: "other", err: errors.New("permanent"), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := retryablePollError(test.err); got != test.want {
+				t.Fatalf("retryablePollError(%T) = %v, want %v", test.err, got, test.want)
+			}
+		})
+	}
+}
+
+func TestAwaitSelectsOnlyOfferedTeamOnce(t *testing.T) {
+	for _, useOption := range []bool{false, true} {
+		t.Run(fmt.Sprintf("option=%v", useOption), func(t *testing.T) {
+			clock := newAwaitClock(10 * time.Second)
+			attempts, selectorCalls := 0, 0
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				if attempts == 1 {
+					if r.URL.Query().Get("team_id") != "" {
+						t.Fatalf("first poll team_id = %q", r.URL.Query().Get("team_id"))
+					}
+					_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1","team-2"]}`)
+					return
+				}
+				if r.URL.Query().Get("team_id") != "team-2" {
+					t.Fatalf("selected team_id = %q", r.URL.Query().Get("team_id"))
+				}
+				_, _ = io.WriteString(w, `{"status":"ready","key":"sk-key","team_id":"team-2","teams":["team-1","team-2"]}`)
+			}))
+			options := AwaitOptions{SelectTeam: func(context.Context, []Team) (string, error) {
+				selectorCalls++
+				return "team-2", nil
+			}}
+			if useOption {
+				options.TeamID = "team-2"
+			}
+
+			credential, err := client.Await(context.Background(), awaitSession(clock), options)
+			wantSelectorCalls := 1
+			if useOption {
+				wantSelectorCalls = 0
+			}
+			if err != nil || credential.TeamID != "team-2" || attempts != 2 || selectorCalls != wantSelectorCalls {
+				t.Fatalf("Await() = %#v, %v; attempts = %d; selector = %d", credential, err, attempts, selectorCalls)
+			}
+		})
+	}
+}
+
+func TestAwaitRejectsInvalidTeamBeforeRepolling(t *testing.T) {
+	for _, teamID := range []string{"", "team-3"} {
+		t.Run(fmt.Sprintf("team=%q", teamID), func(t *testing.T) {
+			clock := newAwaitClock(10 * time.Second)
+			attempts := 0
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1","team-2"]}`)
+			}))
+			_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{SelectTeam: func(context.Context, []Team) (string, error) {
+				return teamID, nil
+			}})
+			if !errors.Is(err, ErrProtocol) || attempts != 1 {
+				t.Fatalf("Await() error = %v; attempts = %d", err, attempts)
+			}
+		})
+	}
+}
+
+func TestAwaitTeamRequiredAndEventsUseIndependentTeamCopies(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":[{"id":"team-1","alias":"Engineering"}]}`)
+	}))
+	eventCalls := 0
+
+	_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{OnEvent: func(event Event) {
+		eventCalls++
+		if event.Kind != EventTeamsRequired || event.Attempt != 1 {
+			t.Fatalf("event = %#v", event)
+		}
+		event.Teams[0].ID = "mutated"
+	}})
+	var teamErr *TeamRequiredError
+	if !errors.As(err, &teamErr) || eventCalls != 1 || len(teamErr.Teams) != 1 || teamErr.Teams[0].ID != "team-1" {
+		t.Fatalf("Await() error = %#v; event calls = %d", err, eventCalls)
+	}
+}
+
+func TestAwaitPreservesSelectorErrorsAndRejectsRepeatedSelection(t *testing.T) {
+	sentinel := errors.New("selector stopped")
+	for _, test := range []struct {
+		name     string
+		selector TeamSelector
+		want     error
+		wantPoll int
+	}{
+		{name: "selector error", selector: func(context.Context, []Team) (string, error) { return "", sentinel }, want: sentinel, wantPoll: 1},
+		{name: "repeated selection", selector: func(context.Context, []Team) (string, error) { return "team-1", nil }, want: ErrProtocol, wantPoll: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newAwaitClock(10 * time.Second)
+			attempts := 0
+			client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1"]}`)
+			}))
+			_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{SelectTeam: test.selector})
+			if !errors.Is(err, test.want) || attempts != test.wantPoll {
+				t.Fatalf("Await() error = %v; attempts = %d", err, attempts)
+			}
+		})
+	}
+}
+
+func TestAwaitSurfacesTeamMembership403Detail(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	attempts := 0
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		if attempts == 1 {
+			_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1"]}`)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"detail":"membership denied"}`)
+	}))
+
+	_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{TeamID: "team-1"})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusForbidden || httpErr.Detail != "membership denied" || attempts != 2 {
+		t.Fatalf("Await() error = %#v; attempts = %d", err, attempts)
+	}
+}
+
+func TestAwaitRejectsCredentialForDifferentSelectedTeam(t *testing.T) {
+	for _, ready := range []string{
+		`{"status":"ready","key":"sk-key","team_id":"team-2","teams":["team-1","team-2"]}`,
+		`{"status":"ready","key":"sk-key"}`,
+	} {
+		clock := newAwaitClock(10 * time.Second)
+		attempts := 0
+		client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attempts++
+			w.Header().Set("Content-Type", "application/json")
+			if attempts == 1 {
+				_, _ = io.WriteString(w, `{"status":"ready","requires_team_selection":true,"teams":["team-1","team-2"]}`)
+				return
+			}
+			_, _ = io.WriteString(w, ready)
+		}))
+
+		_, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{TeamID: "team-1"})
+		if !errors.Is(err, ErrProtocol) || attempts != 2 {
+			t.Fatalf("Await(%s) error = %v; attempts = %d", ready, err, attempts)
+		}
+	}
+}
+
+func TestAuthenticateStartsCallsBackThenAwaitsSilently(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	started, polled := false, false
+	client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sso/cli/start"):
+			started = true
+			_, _ = io.WriteString(w, `{"login_id":"login-1","poll_secret":"secret","user_code":"CODE","expires_in":10}`)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/sso/cli/poll/"):
+			polled = true
+			_, _ = io.WriteString(w, `{"status":"ready","key":"sk-key"}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+		}
+	}))
+	callbacks := 0
+
+	credential, err := client.Authenticate(context.Background(), AuthenticateOptions{OnSession: func(ctx context.Context, session Session) error {
+		callbacks++
+		if !started || polled || session.LoginID != "login-1" || session.pollSecret != "secret" {
+			t.Fatalf("callback session = %#v; started=%v polled=%v", session, started, polled)
+		}
+		return nil
+	}})
+	if err != nil || credential.Key != "sk-key" || callbacks != 1 || !polled {
+		t.Fatalf("Authenticate() = %#v, %v; callbacks = %d; polled = %v", credential, err, callbacks, polled)
+	}
+}
+
+func TestAuthenticatePreservesSessionCallbackErrors(t *testing.T) {
+	for _, callbackErr := range []error{errors.New("stop"), context.Canceled} {
+		clock := newAwaitClock(10 * time.Second)
+		polls := 0
+		client := awaitClient(t, clock, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodPost {
+				polls++
+			}
+			_, _ = io.WriteString(w, `{"login_id":"login-1","poll_secret":"secret","user_code":"CODE","expires_in":10}`)
+		}))
+		_, err := client.Authenticate(context.Background(), AuthenticateOptions{OnSession: func(context.Context, Session) error {
+			return callbackErr
+		}})
+		if !errors.Is(err, callbackErr) || polls != 0 {
+			t.Fatalf("Authenticate() error = %v; polls = %d", err, polls)
+		}
+	}
+}
+
+type awaitClock struct {
+	now      time.Time
+	lifetime time.Duration
+	waits    []time.Duration
+}
+
+func newAwaitClock(lifetime time.Duration) *awaitClock {
+	return &awaitClock{now: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC), lifetime: lifetime}
+}
+
+func (c *awaitClock) Now() time.Time { return c.now }
+
+func (c *awaitClock) Wait(ctx context.Context, delay time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		c.waits = append(c.waits, delay)
+		c.now = c.now.Add(delay)
+		return nil
+	}
+}
+
+func awaitSession(clock *awaitClock) Session {
+	return Session{
+		LoginID:    "login-1",
+		ExpiresIn:  clock.lifetime,
+		pollSecret: "secret",
+		expiresAt:  clock.Now().Add(clock.lifetime),
+	}
+}
+
+func awaitClient(t *testing.T, clock *awaitClock, handler http.HandlerFunc, options ...Option) *Client {
+	t.Helper()
+	server := testserver.New(handler)
+	t.Cleanup(server.Close)
+	options = append(options, WithPollInterval(2*time.Second))
+	client, err := New(server.URL, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now, client.wait = clock.Now, clock.Wait
+	return client
+}
+
+func pollResponseFor(req *http.Request, status int, body string, header http.Header) *http.Response {
+	if header == nil {
+		header = make(http.Header)
+	}
+	header.Set("Content-Type", "application/json")
+	return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: req}
 }
 
 func pollClient(t *testing.T, response string) *Client {

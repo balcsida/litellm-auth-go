@@ -59,10 +59,15 @@ func (e TeamRequiredError) Error() string { return ErrTeamRequired.Error() }
 
 func (e TeamRequiredError) Unwrap() error { return ErrTeamRequired }
 
-type LoginTimeoutError struct{}
+type LoginTimeoutError struct {
+	callerDeadline bool
+}
 
 func (LoginTimeoutError) Error() string { return "LiteLLM CLI login timed out" }
 
-func (LoginTimeoutError) Unwrap() []error {
+func (e LoginTimeoutError) Unwrap() []error {
+	if e.callerDeadline {
+		return []error{context.DeadlineExceeded}
+	}
 	return []error{context.DeadlineExceeded, ErrLoginExpired}
 }

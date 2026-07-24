@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 	"unicode"
 )
 
@@ -49,9 +54,9 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 			return PollResult{}, errors.New("LiteLLM CLI SSO poll: redirects are not allowed")
 		}
 		if ctx.Err() != nil {
-			return PollResult{}, fmt.Errorf("LiteLLM CLI SSO poll request to %s: %w", requestURL, ctx.Err())
+			return PollResult{}, transportError{err: ctx.Err()}
 		}
-		return PollResult{}, fmt.Errorf("LiteLLM CLI SSO poll request to %s failed", requestURL)
+		return PollResult{}, transportError{err: err}
 	}
 	defer response.Body.Close()
 
@@ -80,6 +85,230 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 		return PollResult{}, protocolError(detail)
 	}
 }
+
+func (c *Client) Await(ctx context.Context, session Session, options AwaitOptions) (Credential, error) {
+	if session.LoginID == "" || session.pollSecret == "" || session.expiresAt.IsZero() {
+		return Credential{}, ErrProtocol
+	}
+	teamID := ""
+	teamSelected := false
+	for attempt := 1; ; attempt++ {
+		now := c.now()
+		if err := awaitDeadline(ctx, session, now); err != nil {
+			return Credential{}, err
+		}
+		remaining := session.expiresAt.Sub(now)
+		timeout := c.requestTimeout
+		if remaining < timeout {
+			timeout = remaining
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, timeout)
+		result, err := c.PollOnce(requestCtx, session, teamID)
+		cancel()
+		if deadlineErr := awaitDeadline(ctx, session, c.now()); deadlineErr != nil {
+			return Credential{}, deadlineErr
+		}
+		if err != nil {
+			if !retryablePollError(err) {
+				return Credential{}, err
+			}
+			event := Event{Kind: EventRetrying, Attempt: attempt, Err: safeEventError(err)}
+			var httpErr *HTTPError
+			if errors.As(err, &httpErr) {
+				event.StatusCode = httpErr.StatusCode
+			}
+			emitEvent(options.OnEvent, event)
+			if err := c.awaitWait(ctx, session, retryDelay(err, c.now(), c.pollInterval)); err != nil {
+				return Credential{}, err
+			}
+			continue
+		}
+
+		switch result.Status {
+		case PollPending:
+			emitEvent(options.OnEvent, Event{Kind: EventPending, Attempt: attempt})
+			if err := c.awaitWait(ctx, session, c.pollInterval); err != nil {
+				return Credential{}, err
+			}
+		case PollReady:
+			if result.Credential == nil || (teamSelected && result.Credential.TeamID != teamID) {
+				return Credential{}, ErrProtocol
+			}
+			return *result.Credential, nil
+		case PollTeamSelection:
+			if teamSelected {
+				return Credential{}, ErrProtocol
+			}
+			teams := append([]Team(nil), result.Teams...)
+			emitEvent(options.OnEvent, Event{Kind: EventTeamsRequired, Attempt: attempt, Teams: teams})
+			selected := options.TeamID
+			if selected == "" {
+				if options.SelectTeam == nil {
+					return Credential{}, &TeamRequiredError{Teams: append([]Team(nil), teams...)}
+				}
+				var err error
+				selected, err = options.SelectTeam(ctx, append([]Team(nil), teams...))
+				if err != nil {
+					return Credential{}, err
+				}
+			}
+			if !offeredTeam(selected, teams) {
+				return Credential{}, ErrProtocol
+			}
+			teamID, teamSelected = selected, true
+		default:
+			return Credential{}, ErrProtocol
+		}
+	}
+}
+
+func (c *Client) Authenticate(ctx context.Context, options AuthenticateOptions) (Credential, error) {
+	session, err := c.Start(ctx)
+	if err != nil {
+		return Credential{}, err
+	}
+	if options.OnSession != nil {
+		if err := options.OnSession(ctx, session); err != nil {
+			return Credential{}, err
+		}
+	}
+	return c.Await(ctx, session, AwaitOptions{
+		TeamID:     options.TeamID,
+		SelectTeam: options.SelectTeam,
+		OnEvent:    options.OnEvent,
+	})
+}
+
+func (c *Client) awaitWait(ctx context.Context, session Session, delay time.Duration) error {
+	now := c.now()
+	if err := awaitDeadline(ctx, session, now); err != nil {
+		return err
+	}
+	if remaining := session.expiresAt.Sub(now); delay > remaining {
+		delay = remaining
+	}
+	if err := c.wait(ctx, delay); err != nil {
+		if deadlineErr := awaitDeadline(ctx, session, c.now()); deadlineErr != nil {
+			return deadlineErr
+		}
+		return err
+	}
+	return nil
+}
+
+func awaitDeadline(ctx context.Context, session Session, now time.Time) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return context.Canceled
+	}
+	expired := !now.Before(session.expiresAt)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if deadline, ok := ctx.Deadline(); expired && ok && !deadline.Before(session.expiresAt) {
+			return &LoginTimeoutError{}
+		}
+		return &LoginTimeoutError{callerDeadline: true}
+	}
+	if expired {
+		return &LoginTimeoutError{}
+	}
+	return nil
+}
+
+func defaultWait(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryablePollError(err error) bool {
+	if errors.Is(err, ErrProtocol) {
+		return false
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Retryable
+	}
+	if !errors.As(err, new(transportError)) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTimeout || dnsErr.IsTemporary
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+func retryDelay(err error, now time.Time, fallback time.Duration) time.Duration {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.retryAfter == "" {
+		return fallback
+	}
+	if strings.IndexFunc(httpErr.retryAfter, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+		if seconds, parseErr := strconv.ParseInt(httpErr.retryAfter, 10, 64); parseErr == nil {
+			if seconds > int64(time.Duration(1<<63-1)/time.Second) {
+				return time.Duration(1<<63 - 1)
+			}
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	if date, parseErr := http.ParseTime(httpErr.retryAfter); parseErr == nil {
+		if delay := date.Sub(now); delay >= 0 {
+			return delay
+		}
+	}
+	return fallback
+}
+
+func offeredTeam(selected string, teams []Team) bool {
+	if selected == "" {
+		return false
+	}
+	for _, team := range teams {
+		if team.ID == selected {
+			return true
+		}
+	}
+	return false
+}
+
+func emitEvent(callback func(Event), event Event) {
+	if callback == nil {
+		return
+	}
+	event.Teams = append([]Team(nil), event.Teams...)
+	callback(event)
+}
+
+func safeEventError(err error) error {
+	return errors.New(err.Error())
+}
+
+type transportError struct {
+	err error
+}
+
+func (transportError) Error() string { return "LiteLLM CLI SSO poll request failed" }
+
+func (e transportError) GoString() string { return e.Error() }
+
+func (e transportError) Unwrap() error { return e.err }
 
 func pollHTTPError(response *http.Response, body []byte, oversized bool, secret string) error {
 	err := &HTTPError{
