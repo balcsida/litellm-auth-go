@@ -303,6 +303,42 @@ func TestPollOnceRejectsMalformedResponsesAndReadErrorsSafely(t *testing.T) {
 	}
 }
 
+func TestPollOnceClassifiesResponseBodyReadFailures(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		readErr   error
+		retryable bool
+	}{
+		{name: "unexpected EOF", readErr: io.ErrUnexpectedEOF, retryable: true},
+		{name: "timeout", readErr: context.DeadlineExceeded, retryable: true},
+		{name: "connection reset", readErr: syscall.ECONNRESET, retryable: true},
+		{name: "permanent", readErr: errors.New("permanent body read failure")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/json"}},
+					Body:       &errorBody{body: `{"status":"pending"}`, err: test.readErr},
+					Request:    req,
+				}, nil
+			})}))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = client.PollOnce(context.Background(), pollSession("secret"), "")
+			if err == nil || !errors.Is(err, test.readErr) || retryablePollError(err) != test.retryable ||
+				errors.Is(err, ErrProtocol) != !test.retryable {
+				t.Fatalf("PollOnce() error = %#v; retryable = %v", err, retryablePollError(err))
+			}
+			if strings.Contains(err.Error(), test.readErr.Error()) {
+				t.Fatalf("PollOnce() leaked body read error: %q", err)
+			}
+		})
+	}
+}
+
 func TestPollOnceRejectsRedirectAndHonorsContext(t *testing.T) {
 	redirect := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://example.com/do-not-leak", http.StatusFound)
@@ -375,6 +411,38 @@ func TestAwaitRetriesTransientTransportErrorWithSafeEvent(t *testing.T) {
 	}
 	if event.Kind != EventRetrying || event.Attempt != 1 || event.StatusCode != 0 || event.Err == nil || strings.Contains(fmt.Sprintf("%#v", event.Err), secret) {
 		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestAwaitRetriesTransientResponseBodyReadFailure(t *testing.T) {
+	clock := newAwaitClock(10 * time.Second)
+	attempts := 0
+	client, err := New("https://gateway.example.com", WithHTTPClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       &errorBody{body: `{"status":"pending"}`, err: io.ErrUnexpectedEOF},
+				Request:    req,
+			}, nil
+		}
+		return pollResponseFor(req, http.StatusOK, `{"status":"ready","key":"sk-key"}`, nil), nil
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now, client.wait = clock.Now, clock.Wait
+	var events []Event
+
+	credential, err := client.Await(context.Background(), awaitSession(clock), AwaitOptions{
+		OnEvent: func(event Event) { events = append(events, event) },
+	})
+	if err != nil || credential.Key != "sk-key" || attempts != 2 {
+		t.Fatalf("Await() = %#v, %v; attempts = %d", credential, err, attempts)
+	}
+	if len(events) != 1 || events[0].Kind != EventRetrying || events[0].Err == nil {
+		t.Fatalf("events = %#v", events)
 	}
 }
 

@@ -67,6 +67,9 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 		return PollResult{}, pollHTTPError(response, body, oversized || readErr != nil, session.pollSecret)
 	}
 	if readErr != nil {
+		if retryableTransportError(readErr) {
+			return PollResult{}, transportError{err: readErr}
+		}
 		return PollResult{}, protocolReadError("poll", readErr)
 	}
 	if oversized || responseContentType(response) != "application/json" {
@@ -258,6 +261,10 @@ func retryablePollError(err error) bool {
 	if !errors.As(err, new(transportError)) {
 		return false
 	}
+	return retryableTransportError(err)
+}
+
+func retryableTransportError(err error) bool {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
 		return dnsErr.IsTimeout || dnsErr.IsTemporary
