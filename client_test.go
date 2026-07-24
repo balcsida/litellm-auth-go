@@ -2,6 +2,7 @@ package litellmauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/balcsida/litellm-auth-go/internal/testserver"
 )
@@ -167,6 +169,34 @@ func TestStartMapsUnsupportedAndRateLimitResponses(t *testing.T) {
 	for _, got := range []string{httpErr.Detail, httpErr.Error(), httpErr.GoString()} {
 		if strings.Contains(got, "do-not-leak") {
 			t.Fatalf("rate-limit error leaked body: %q", got)
+		}
+	}
+}
+
+func TestStartSurfacesSanitizedCappedJSONErrorDetail(t *testing.T) {
+	pollSecret := "poll-secret-abc"
+	key := "sk-sensitive-key"
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature"
+	detail := "retry later\n" + pollSecret + " " + key + " " + jwt + " " +
+		strings.Repeat("a", 511) + strings.Repeat("界", 100)
+	body, err := json.Marshal(map[string]any{
+		"detail":      detail,
+		"key":         key,
+		"poll_secret": pollSecret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = startClient(t, string(body), withStatus(http.StatusTooManyRequests)).Start(context.Background())
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !strings.Contains(httpErr.Detail, "retry later") ||
+		len(httpErr.Detail) > 512 || !utf8.ValidString(httpErr.Detail) || strings.ContainsAny(httpErr.Detail, "\n\r") {
+		t.Fatalf("Start() error = %#v", err)
+	}
+	for _, secret := range []string{pollSecret, key, jwt} {
+		if strings.Contains(httpErr.Detail, secret) {
+			t.Fatalf("Start() detail leaked %q: %q", secret, httpErr.Detail)
 		}
 	}
 }

@@ -4,7 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
+
+const maxHTTPErrorDetailBytes = 512
+
+var detailSecretPattern = regexp.MustCompile(`[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{2,}|sk-[A-Za-z0-9_-]+`)
 
 var (
 	// ErrUnsupportedProxy reports a proxy without the LiteLLM CLI SSO endpoints.
@@ -65,6 +73,29 @@ func (e HTTPError) Is(target error) bool {
 		}
 	}
 	return e.Op == want.Op && e.StatusCode == want.StatusCode && e.Retryable == want.Retryable
+}
+
+func safeHTTPErrorDetail(detail string, secrets ...string) string {
+	for _, secret := range secrets {
+		if secret != "" {
+			detail = strings.ReplaceAll(detail, secret, "[redacted]")
+		}
+	}
+	detail = detailSecretPattern.ReplaceAllString(detail, "[redacted]")
+	detail = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, detail)
+	if len(detail) <= maxHTTPErrorDetailBytes {
+		return detail
+	}
+	detail = detail[:maxHTTPErrorDetailBytes]
+	for !utf8.ValidString(detail) {
+		detail = detail[:len(detail)-1]
+	}
+	return detail
 }
 
 // TeamRequiredError contains the teams offered by a login session.

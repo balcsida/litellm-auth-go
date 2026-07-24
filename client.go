@@ -58,6 +58,10 @@ func (c *Client) Start(ctx context.Context) (Session, error) {
 		return Session{}, fmt.Errorf("%w: upgrade the LiteLLM proxy or check the base URL", ErrUnsupportedProxy)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		detail = safeHTTPErrorDetail(detail)
+		if !oversized && readErr == nil && responseContentType(response) == "application/json" {
+			detail = responseErrorDetail(body)
+		}
 		return Session{}, &HTTPError{
 			Op:         "start",
 			StatusCode: response.StatusCode,
@@ -122,6 +126,22 @@ func responseContentType(response *http.Response) string {
 		return contentType[:128]
 	}
 	return contentType
+}
+
+func responseErrorDetail(body []byte, secrets ...string) string {
+	var decoded struct {
+		Detail      string `json:"detail"`
+		Key         string `json:"key"`
+		PollSecret  string `json:"poll_secret"`
+		JWTToken    string `json:"jwt_token"`
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return ""
+	}
+	secrets = append(secrets, decoded.Key, decoded.PollSecret, decoded.JWTToken, decoded.Token, decoded.AccessToken)
+	return safeHTTPErrorDetail(decoded.Detail, secrets...)
 }
 
 func protocolError(detail string) error { return fmt.Errorf("%w: %s", ErrProtocol, detail) }

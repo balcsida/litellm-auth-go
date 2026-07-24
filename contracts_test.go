@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestSessionFormattingRedactsPollSecret(t *testing.T) {
@@ -28,6 +29,13 @@ func TestHTTPErrorRedactsDetail(t *testing.T) {
 
 	if got := err.Error(); strings.Contains(got, secret) || strings.Contains(got, "key=") {
 		t.Fatalf("HTTP error leaked detail: %q", got)
+	}
+}
+
+func TestHTTPErrorDetailCapPreservesUTF8(t *testing.T) {
+	got := safeHTTPErrorDetail(strings.Repeat("a", maxHTTPErrorDetailBytes-1) + "界")
+	if len(got) != maxHTTPErrorDetailBytes-1 || !utf8.ValidString(got) {
+		t.Fatalf("safeHTTPErrorDetail() returned %d invalid bytes: %q", len(got), got)
 	}
 }
 

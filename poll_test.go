@@ -3,6 +3,7 @@ package litellmauth
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/balcsida/litellm-auth-go/internal/testserver"
 )
@@ -250,6 +252,39 @@ func TestPollOnceClassifiesHTTPResponsesAndSanitizesDetail(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPollOnceSanitizesAndCapsHTTPDetail(t *testing.T) {
+	pollSecret := "poll-secret-abc"
+	key := "sk-sensitive-key"
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature"
+	detail := "membership denied\n" + pollSecret + " " + key + " " + jwt + " " +
+		strings.Repeat("a", 511) + strings.Repeat("界", 100)
+	body, err := json.Marshal(map[string]any{
+		"detail": detail,
+		"key":    key,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	err = pollError(t, pollClient(t, server.URL), pollSession(pollSecret))
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || !strings.Contains(httpErr.Detail, "membership denied") ||
+		len(httpErr.Detail) > 512 || !utf8.ValidString(httpErr.Detail) || strings.ContainsAny(httpErr.Detail, "\n\r") {
+		t.Fatalf("PollOnce() error = %#v", err)
+	}
+	for _, secret := range []string{pollSecret, key, jwt} {
+		if strings.Contains(httpErr.Detail, secret) {
+			t.Fatalf("PollOnce() detail leaked %q: %q", secret, httpErr.Detail)
+		}
 	}
 }
 

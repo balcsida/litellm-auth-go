@@ -12,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 )
 
 var errPollRedirect = errors.New("LiteLLM CLI SSO poll redirect")
@@ -62,7 +61,7 @@ func (c *Client) PollOnce(ctx context.Context, session Session, teamID string) (
 	defer response.Body.Close()
 
 	body, detail, oversized, readErr := readStartResponse(response)
-	detail = strings.ReplaceAll(detail, session.pollSecret, "[redacted]")
+	detail = safeHTTPErrorDetail(detail, session.pollSecret)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return PollResult{}, pollHTTPError(response, body, oversized || readErr != nil, session.pollSecret)
 	}
@@ -342,29 +341,9 @@ func pollHTTPError(response *http.Response, body []byte, oversized bool, secret 
 		retryAfter:   response.Header.Get("Retry-After"),
 	}
 	if !oversized && responseContentType(response) == "application/json" {
-		err.Detail = pollErrorDetail(body, secret)
+		err.Detail = responseErrorDetail(body, secret)
 	}
 	return err
-}
-
-func pollErrorDetail(body []byte, secret string) string {
-	var decoded struct {
-		Detail json.RawMessage `json:"detail"`
-	}
-	if err := json.Unmarshal(body, &decoded); err != nil || len(decoded.Detail) == 0 || string(decoded.Detail) == "null" {
-		return ""
-	}
-	var detail string
-	if err := json.Unmarshal(decoded.Detail, &detail); err != nil {
-		return ""
-	}
-	detail = strings.ReplaceAll(detail, secret, "[redacted]")
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, detail)
 }
 
 func (c *Client) readyPollResult(decoded pollResponse, pollSecret string) (PollResult, error) {
