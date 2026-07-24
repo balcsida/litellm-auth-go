@@ -19,10 +19,13 @@ func TestNewNormalizesAndValidatesBaseURL(t *testing.T) {
 		{name: "loopback hostname HTTP", baseURL: "HTTP://LOCALHOST:80///", want: "http://localhost"},
 		{name: "loopback IPv4 HTTP", baseURL: "http://127.0.0.1:8080/proxy/", want: "http://127.0.0.1:8080/proxy"},
 		{name: "loopback IPv6 HTTP", baseURL: "http://[::1]/proxy/", want: "http://[::1]/proxy"},
+		{name: "canonical IPv6 literal", baseURL: "https://[0:0:0:0:0:0:0:1]/proxy", want: "https://[::1]/proxy"},
 		{name: "explicit HTTP allowance", baseURL: "http://gateway.example.com/api/", opts: []Option{WithAllowInsecureHTTP()}, want: "http://gateway.example.com/api"},
 		{name: "userinfo", baseURL: "https://user@gateway.example.com", wantErr: true},
 		{name: "query", baseURL: "https://gateway.example.com?x=1", wantErr: true},
+		{name: "empty query", baseURL: "https://gateway.example.com?", wantErr: true},
 		{name: "fragment", baseURL: "https://gateway.example.com#fragment", wantErr: true},
+		{name: "empty fragment", baseURL: "https://gateway.example.com#", wantErr: true},
 		{name: "missing host", baseURL: "https:///proxy", wantErr: true},
 		{name: "unsupported scheme", baseURL: "ftp://gateway.example.com", wantErr: true},
 		{name: "non-loopback HTTP", baseURL: "http://gateway.example.com", wantErr: true},
@@ -97,6 +100,10 @@ func TestVerificationURLUsesOnlySafeSameOriginURI(t *testing.T) {
 		{name: "userinfo", uri: "https://user@gateway.example.com/verify", want: fallback},
 		{name: "secret in URI", uri: "https://gateway.example.com/verify?state=poll-secret-abc", want: fallback},
 		{name: "encoded secret query", uri: "https://gateway.example.com/verify?state=poll%2Dsecret%2Dabc", want: fallback},
+		{name: "secret in encoded query key", uri: "https://gateway.example.com/verify?prefix%2Dpoll%2Dsecret%2Dabc=value", want: fallback},
+		{name: "secret in encoded query value substring", uri: "https://gateway.example.com/verify?state=prefix%2Dpoll%2Dsecret%2Dabc-suffix", want: fallback},
+		{name: "secret in encoded path", uri: "https://gateway.example.com/verify/prefix%2Dpoll%2Dsecret%2Dabc-suffix", want: fallback},
+		{name: "secret in encoded fragment", uri: "https://gateway.example.com/verify#prefix%2Dpoll%2Dsecret%2Dabc-suffix", want: fallback},
 		{name: "relative URI", uri: "/verify", want: fallback},
 		{name: "unsupported scheme", uri: "ftp://gateway.example.com/verify", want: fallback},
 	} {
@@ -106,6 +113,18 @@ func TestVerificationURLUsesOnlySafeSameOriginURI(t *testing.T) {
 				t.Fatalf("verificationURL() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestVerificationURLMatchesEquivalentIPLiteralOrigin(t *testing.T) {
+	client, err := New("https://[0:0:0:0:0:0:0:1]/proxy")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	got := client.verificationURL("https://[::1]:443/verify", "login-id", "poll-secret")
+	if want := "https://[::1]:443/verify"; got.String() != want {
+		t.Fatalf("verificationURL() = %q, want %q", got, want)
 	}
 }
 

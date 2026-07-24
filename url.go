@@ -9,7 +9,7 @@ import (
 
 func normalizeBaseURL(raw string, allowInsecureHTTP bool) (*url.URL, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+	if err != nil || strings.Contains(raw, "#") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
 		return nil, errors.New("invalid LiteLLM base URL")
 	}
 	scheme, host, ok := normalizedOrigin(u)
@@ -41,6 +41,9 @@ func normalizedOrigin(u *url.URL) (scheme, host string, ok bool) {
 	hostname := strings.ToLower(u.Hostname())
 	if hostname == "" || !validURLHost(u.Host) {
 		return "", "", false
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		hostname = ip.String()
 	}
 	port := u.Port()
 	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
@@ -103,21 +106,34 @@ func (c *Client) endpoint(segments ...string) *url.URL {
 func (c *Client) verificationURL(raw, loginID, pollSecret string) *url.URL {
 	fallback := c.browserURL(loginID)
 	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || !sameOrigin(c.baseURL, u) || (pollSecret != "" && strings.Contains(raw, pollSecret)) {
+	if err != nil || u.User != nil || !sameOrigin(c.baseURL, u) || containsPollSecret(raw, u, pollSecret) {
 		return fallback
+	}
+	return u
+}
+
+func containsPollSecret(raw string, u *url.URL, secret string) bool {
+	if secret == "" {
+		return false
+	}
+	if strings.Contains(raw, secret) || strings.Contains(u.Path, secret) || strings.Contains(u.Fragment, secret) {
+		return true
 	}
 	query, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
-		return fallback
+		return true
 	}
-	for _, values := range query {
+	for key, values := range query {
+		if strings.Contains(key, secret) {
+			return true
+		}
 		for _, value := range values {
-			if value == pollSecret {
-				return fallback
+			if strings.Contains(value, secret) {
+				return true
 			}
 		}
 	}
-	return u
+	return false
 }
 
 func sameOrigin(base string, candidate *url.URL) bool {
