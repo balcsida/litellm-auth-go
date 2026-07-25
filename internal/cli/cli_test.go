@@ -650,8 +650,36 @@ func TestWhoamiJSONIncludesGenericMetadata(t *testing.T) {
 		got["non_expiring"] != true {
 		t.Fatalf("JSON = %#v", got)
 	}
+	if scopes, ok := got["scopes"].([]any); !ok || len(scopes) != 1 || scopes[0] != "litellm.invoke" {
+		t.Fatalf("JSON scopes = %#v", got["scopes"])
+	}
 	if _, exists := got["key"]; exists {
 		t.Fatalf("JSON exposed key: %#v", got)
+	}
+}
+
+func TestWhoamiRejectsCredentialKeyInGenericMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*litellmauth.Credential)
+	}{
+		{name: "auth method", apply: func(c *litellmauth.Credential) { c.AuthMethod = litellmauth.AuthMethod("method-" + c.Key) }},
+		{name: "token type", apply: func(c *litellmauth.Credential) { c.TokenType = "type-" + c.Key }},
+		{name: "issuer", apply: func(c *litellmauth.Credential) { c.Issuer = "issuer-" + c.Key }},
+		{name: "subject", apply: func(c *litellmauth.Credential) { c.Subject = "subject-" + c.Key }},
+		{name: "scope", apply: func(c *litellmauth.Credential) { c.Scopes = []string{"scope-" + c.Key} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credential := successfulCredential()
+			test.apply(&credential)
+			store := &fakeStore{credential: credential}
+			deps, stdout, stderr := testDependencies(store)
+
+			err := execute(context.Background(), []string{"whoami", "--json"}, deps)
+			if !errors.Is(err, litellmauth.ErrProtocol) || stdout.Len() != 0 || strings.Contains(stderr.String(), credential.Key) {
+				t.Fatalf("execute() error = %v; stdout = %q; stderr = %q", err, stdout, stderr)
+			}
+		})
 	}
 }
 
