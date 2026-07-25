@@ -50,6 +50,77 @@ func TestStartCreatesLegacySession(t *testing.T) {
 	}
 }
 
+func TestNewAuthenticationTypesDoNotFormatSecrets(t *testing.T) {
+	static, err := NewStaticSource("sk-static-secret", SourceConfig{NonExpiring: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileSource, err := NewTokenFileSource("/tmp/path-containing-secret", SourceConfig{NonExpiring: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSource, err := NewExecSource("/helper", []string{"argument-containing-secret"}, ExecSourceConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binder, err := NewBearerHeader("Authorization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := Binding{Source: static, Binder: binder}
+	authenticator, err := NewAuthenticator(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := authenticator.Transport(nil)
+
+	for _, rendered := range []string{
+		fmt.Sprintf("%v", static),
+		fmt.Sprintf("%#v", static),
+		fmt.Sprintf("%v", fileSource),
+		fmt.Sprintf("%#v", fileSource),
+		fmt.Sprintf("%v", execSource),
+		fmt.Sprintf("%#v", execSource),
+		fmt.Sprintf("%v", binder),
+		fmt.Sprintf("%#v", binder),
+		fmt.Sprintf("%v", binding),
+		fmt.Sprintf("%#v", binding),
+		fmt.Sprintf("%v", authenticator),
+		fmt.Sprintf("%#v", authenticator),
+		fmt.Sprintf("%v", transport),
+		fmt.Sprintf("%#v", transport),
+	} {
+		for _, forbidden := range []string{
+			"sk-static-secret",
+			"path-containing-secret",
+			"argument-containing-secret",
+		} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("formatting leaked %q: %q", forbidden, rendered)
+			}
+		}
+	}
+}
+
+func TestAuthenticatorFormattersAreSecretFree(t *testing.T) {
+	authenticator := &Authenticator{}
+	transport := &authTransport{}
+
+	for _, test := range []struct {
+		value any
+		want  string
+	}{
+		{authenticator, "composite authenticator"},
+		{transport, "authenticated HTTP transport"},
+	} {
+		for _, format := range []string{"%v", "%#v"} {
+			if got := fmt.Sprintf(format, test.value); got != test.want {
+				t.Errorf("fmt.Sprintf(%q, %T) = %q, want %q", format, test.value, got, test.want)
+			}
+		}
+	}
+}
+
 func TestHTTPErrorSafeDetailSanitizesConstructedErrors(t *testing.T) {
 	err := HTTPError{
 		Op:         "poll",

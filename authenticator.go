@@ -25,6 +25,12 @@ type Authenticator struct {
 	now      func() time.Time
 }
 
+// String returns a secret-free description.
+func (*Authenticator) String() string { return "composite authenticator" }
+
+// GoString returns a secret-free description.
+func (a *Authenticator) GoString() string { return a.String() }
+
 // NewAuthenticator validates and copies bindings.
 func NewAuthenticator(bindings ...Binding) (*Authenticator, error) {
 	if len(bindings) == 0 {
@@ -102,6 +108,12 @@ type authTransport struct {
 	authenticator *Authenticator
 	base          http.RoundTripper
 }
+
+// String returns a secret-free description.
+func (*authTransport) String() string { return "authenticated HTTP transport" }
+
+// GoString returns a secret-free description.
+func (t *authTransport) GoString() string { return t.String() }
 
 func (t *authTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if t == nil || t.authenticator == nil || t.base == nil || request == nil {
