@@ -74,7 +74,7 @@ func TestLiteLLMFullLoginSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != PollReady || result.Credential == nil || result.Credential.Key == "" || result.Credential.UserID == "" {
+	if result.Status != PollReady || result.Credential == nil || result.Credential.Key == "" || result.Credential.UserID != "smoke-user" {
 		t.Fatalf("poll result = %#v", result)
 	}
 }
