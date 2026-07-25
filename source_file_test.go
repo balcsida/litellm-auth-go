@@ -34,6 +34,27 @@ func TestTokenFileSourceReloadsRotatedToken(t *testing.T) {
 	}
 }
 
+func TestTokenFileSourceCopiesConfiguredScopes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("sk-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scopes := []string{"scope-a"}
+	source, err := NewTokenFileSource(path, SourceConfig{
+		NonExpiring: true,
+		Scopes:      scopes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes[0] = "changed"
+
+	credential, err := source.Credential(context.Background())
+	if err != nil || len(credential.Scopes) != 1 || credential.Scopes[0] != "scope-a" {
+		t.Fatalf("Credential() = %#v, %v", credential, err)
+	}
+}
+
 func TestTokenFileSourceRejectsMissingOversizedAndWhitespace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
 	source, err := NewTokenFileSource(path, SourceConfig{NonExpiring: true})

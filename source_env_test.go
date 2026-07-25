@@ -35,6 +35,24 @@ func TestEnvSourceReadsEachCallWithoutLeakingValue(t *testing.T) {
 	}
 }
 
+func TestEnvSourceCopiesConfiguredScopes(t *testing.T) {
+	scopes := []string{"scope-a"}
+	source, err := NewEnvSource("LITELLM_API_KEY", SourceConfig{
+		NonExpiring: true,
+		Scopes:      scopes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.lookupEnv = func(string) (string, bool) { return "sk-key", true }
+	scopes[0] = "changed"
+
+	credential, err := source.Credential(context.Background())
+	if err != nil || len(credential.Scopes) != 1 || credential.Scopes[0] != "scope-a" {
+		t.Fatalf("Credential() = %#v, %v", credential, err)
+	}
+}
+
 func TestEnvSourceRejectsMissingEmptyAndInvalidName(t *testing.T) {
 	if _, err := NewEnvSource("BAD-NAME", SourceConfig{NonExpiring: true}); err == nil {
 		t.Fatal("NewEnvSource() accepted invalid name")

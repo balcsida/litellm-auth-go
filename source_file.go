@@ -27,6 +27,7 @@ func NewTokenFileSource(path string, config SourceConfig) (*TokenFileSource, err
 	if config.AuthMethod == "" {
 		config.AuthMethod = AuthMethodFile
 	}
+	config.Scopes = append([]string(nil), config.Scopes...)
 	return &TokenFileSource{
 		path:   filepath.Clean(path),
 		config: config,

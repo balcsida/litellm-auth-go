@@ -26,6 +26,7 @@ func NewEnvSource(name string, config SourceConfig) (*EnvSource, error) {
 	if config.AuthMethod == "" {
 		config.AuthMethod = AuthMethodEnvironment
 	}
+	config.Scopes = append([]string(nil), config.Scopes...)
 	return &EnvSource{
 		name:      name,
 		config:    config,
