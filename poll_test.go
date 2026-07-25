@@ -1108,6 +1108,40 @@ func TestAuthenticateStartsCallsBackThenAwaitsSilently(t *testing.T) {
 	}
 }
 
+func TestAuthenticateBoundsOnSessionBySessionExpiry(t *testing.T) {
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"login_id":"login-1","poll_secret":"secret","user_code":"CODE","expires_in":1}`)
+			return
+		}
+		t.Fatalf("unexpected poll request: %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+
+	client, err := New(
+		server.URL,
+		WithHTTPClient(server.Client()),
+		WithMaxWait(20*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Authenticate(context.Background(), AuthenticateOptions{
+		OnSession: func(ctx context.Context, _ Session) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if !errors.Is(err, ErrLoginExpired) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if len(server.Requests()) != 1 {
+		t.Fatalf("requests = %d, want start only", len(server.Requests()))
+	}
+}
+
 func TestAuthenticatePreservesSessionCallbackErrors(t *testing.T) {
 	for _, callbackErr := range []error{errors.New("stop"), context.Canceled} {
 		clock := newAwaitClock(10 * time.Second)
