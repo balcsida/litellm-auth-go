@@ -382,6 +382,8 @@ func (c *Client) readyPollResult(decoded pollResponse, pollSecret string) (PollR
 		return PollResult{}, protocolError("credential")
 	}
 	credential.BaseURL = c.baseURL
+	credential.AuthMethod = AuthMethodLiteLLMSSO
+	credential.TokenType = "Bearer"
 	credential.IssuedAt = c.now()
 	credential.ExpiresAt = credential.Expiry()
 	credential.Teams = teams

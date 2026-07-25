@@ -97,6 +97,19 @@ func TestPollOnceParsesReadyCredentialAndTeams(t *testing.T) {
 	}
 }
 
+func TestPollOnceMarksLiteLLMSSOCredentials(t *testing.T) {
+	client := pollClient(t, `{"status":"ready","key":"sk-key"}`)
+	result, err := client.PollOnce(context.Background(), pollSession("secret"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Credential == nil ||
+		result.Credential.AuthMethod != AuthMethodLiteLLMSSO ||
+		result.Credential.TokenType != "Bearer" {
+		t.Fatalf("credential = %#v", result.Credential)
+	}
+}
+
 func TestPollOncePopulatesCredentialExpiry(t *testing.T) {
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	jwtExpiresAt := now.Add(2 * time.Hour)
