@@ -24,6 +24,16 @@ credential file as trust boundaries.
   with broader Unix permissions are rejected rather than silently repaired.
 - Credential replacement is atomic, validates stored keys and metadata, and
   never persists login-session or polling secrets.
+- Generic credentials fail closed when their expiry is unknown, unless the
+  token has a JWT `exp` claim or is explicitly marked non-expiring.
+- Environment and file sources are re-read for every acquisition.
+- External credential helpers run without a shell, receive only allowlisted
+  environment variables, have bounded execution time and output, and cannot
+  expose stdout or stderr through library errors.
+- Composite authentication acquires every credential before mutating a
+  request, and the provided transport clones the request and headers.
+- The CLI never accepts a token as an argument, and external-helper arguments
+  are documented as non-secret process metadata.
 
 Callers should avoid logging returned credentials and should pass an explicit
 base URL when loading a token for a particular proxy.
