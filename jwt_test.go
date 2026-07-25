@@ -100,18 +100,22 @@ func TestCredentialFreshHonorsExpiresAt(t *testing.T) {
 
 func TestCredentialAuthorizationHeaderValidatesKey(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		key  string
-		want string
+		name      string
+		key       string
+		tokenType string
+		want      string
 	}{
 		{name: "valid", key: "sk-key", want: "Bearer sk-key"},
+		{name: "custom token type", key: "sk-key", tokenType: "DPoP", want: "DPoP sk-key"},
+		{name: "token type with space", key: "sk-key", tokenType: "Bad Type"},
+		{name: "control in token type", key: "sk-key", tokenType: "Bad\nType"},
 		{name: "empty"},
 		{name: "ASCII space", key: "sk key"},
 		{name: "Unicode space", key: "sk\u00a0key"},
 		{name: "control", key: "sk\x00key"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := (Credential{Key: test.key}).AuthorizationHeader(); got != test.want {
+			if got := (Credential{Key: test.key, TokenType: test.tokenType}).AuthorizationHeader(); got != test.want {
 				t.Fatalf("AuthorizationHeader() = %q, want %q", got, test.want)
 			}
 		})
@@ -160,6 +164,14 @@ func TestCredentialFreshnessByAuthenticationMethod(t *testing.T) {
 				ExpiresAt: now.Add(time.Hour),
 			},
 			fresh: true,
+		},
+		{
+			name: "generic malformed authorization header",
+			credential: Credential{
+				Key: "sk bad", AuthMethod: AuthMethodEnvironment,
+				ExpiresAt: now.Add(time.Hour),
+			},
+			fresh: false,
 		},
 	}
 
