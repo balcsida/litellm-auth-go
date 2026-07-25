@@ -85,6 +85,9 @@ func (b *headerBinder) Bind(request *http.Request, credential Credential) error 
 	if !b.raw {
 		value = b.prefix + " " + credential.Key
 	}
+	if request.Header == nil {
+		request.Header = make(http.Header)
+	}
 	request.Header.Set(b.header, value)
 	return nil
 }

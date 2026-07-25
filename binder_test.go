@@ -75,6 +75,24 @@ func TestHeaderBinders(t *testing.T) {
 	}
 }
 
+func TestHeaderBinderInitializesNilRequestHeader(t *testing.T) {
+	binder, err := NewBearerHeader("Authorization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := new(http.Request)
+	credential := Credential{
+		Key: "sk-key", AuthMethod: AuthMethodStatic, NonExpiring: true,
+	}
+
+	if err := binder.Bind(request, credential); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := request.Header.Get("Authorization"), "Bearer sk-key"; got != want {
+		t.Fatalf("header = %q, want %q", got, want)
+	}
+}
+
 func TestHeaderBinderRejectsInvalidInputsWithoutLeakingKey(t *testing.T) {
 	for _, create := range []func() (Binder, error){
 		func() (Binder, error) { return NewBearerHeader("Bad\nHeader") },
