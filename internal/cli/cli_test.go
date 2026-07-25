@@ -168,6 +168,24 @@ func TestCLIHTTPErrorPrecedence(t *testing.T) {
 	}
 }
 
+func TestCLIPrintsSafeImportErrors(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{err: litellmauth.ErrCredentialExpiryUnknown, want: "Credential expiry is unknown; provide --expires-at, --ttl, or --non-expiring.\n"},
+		{err: litellmauth.ErrInvalidCredential, want: litellmauth.ErrInvalidCredential.Error() + "\n"},
+		{err: litellmauth.ErrSourceUnavailable, want: litellmauth.ErrSourceUnavailable.Error() + "\n"},
+		{err: litellmauth.ErrSourceOutput, want: litellmauth.ErrSourceOutput.Error() + "\n"},
+	} {
+		var output bytes.Buffer
+		printError(&output, test.err)
+		if got := output.String(); got != test.want {
+			t.Fatalf("printError(%v) = %q, want %q", test.err, got, test.want)
+		}
+	}
+}
+
 func TestLoginPassesGlobalOptions(t *testing.T) {
 	store := new(fakeStore)
 	deps, _, _ := testDependencies(store)

@@ -113,6 +113,7 @@ func newRoot(deps dependencies) *cobra.Command {
 	root.PersistentFlags().BoolVar(&options.verbose, "verbose", false, "show safe login progress")
 	root.AddCommand(
 		newLoginCommand(&options, deps),
+		newImportTokenCommand(&options, deps),
 		newLogoutCommand(&options, deps),
 		newWhoamiCommand(&options, deps),
 		newPrintTokenCommand(&options, deps),
@@ -467,11 +468,12 @@ func printEvent(output io.Writer, event litellmauth.Event) {
 func printError(output io.Writer, err error) {
 	var teamErr *litellmauth.TeamRequiredError
 	var httpErr *litellmauth.HTTPError
+	var safeErr *safeCLIError
 	switch {
 	case errors.Is(err, litellmauth.ErrNoCredential):
 		fmt.Fprintln(output, "Not authenticated: no stored LiteLLM credential.")
 	case errors.Is(err, litellmauth.ErrCredentialStale):
-		fmt.Fprintln(output, "Stored LiteLLM credential is stale; run litellm-auth login.")
+		fmt.Fprintln(output, "Credential is stale; run litellm-auth login or import a fresh token.")
 	case errors.As(err, &teamErr):
 		available := make([]string, len(teamErr.Teams))
 		for index, team := range teamErr.Teams {
@@ -482,6 +484,16 @@ func printError(output io.Writer, err error) {
 		fmt.Fprintln(output, litellmauth.ErrOriginMismatch)
 	case errors.Is(err, litellmauth.ErrUnsupportedProxy):
 		fmt.Fprintln(output, litellmauth.ErrUnsupportedProxy)
+	case errors.As(err, &safeErr):
+		fmt.Fprintln(output, safeErr.Error())
+	case errors.Is(err, litellmauth.ErrCredentialExpiryUnknown):
+		fmt.Fprintln(output, "Credential expiry is unknown; provide --expires-at, --ttl, or --non-expiring.")
+	case errors.Is(err, litellmauth.ErrInvalidCredential):
+		fmt.Fprintln(output, litellmauth.ErrInvalidCredential)
+	case errors.Is(err, litellmauth.ErrSourceUnavailable):
+		fmt.Fprintln(output, litellmauth.ErrSourceUnavailable)
+	case errors.Is(err, litellmauth.ErrSourceOutput):
+		fmt.Fprintln(output, litellmauth.ErrSourceOutput)
 	case errors.As(err, &httpErr):
 		detail := httpErr.SafeDetail()
 		if detail != "" {
