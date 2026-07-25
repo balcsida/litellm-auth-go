@@ -54,6 +54,11 @@ func (e HTTPError) Error() string {
 // GoString returns a safe summary of the HTTP error.
 func (e HTTPError) GoString() string { return e.Error() }
 
+// SafeDetail returns bounded, control-free, secret-redacted proxy detail.
+func (e HTTPError) SafeDetail() string {
+	return safeHTTPErrorDetail(e.Detail)
+}
+
 // Unwrap returns ErrLoginExpired for expired login sessions.
 func (e HTTPError) Unwrap() error {
 	if e.loginExpired {

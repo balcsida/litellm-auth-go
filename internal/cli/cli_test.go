@@ -118,6 +118,32 @@ func TestLoginBaseURLPrecedence(t *testing.T) {
 	}
 }
 
+func TestCLIPrintsSafeHTTPErrorDetail(t *testing.T) {
+	store := new(fakeStore)
+	deps, stdout, stderr := testDependencies(store)
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return fakeClient{authenticate: func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
+			return litellmauth.Credential{}, &litellmauth.HTTPError{
+				Op:         "poll",
+				StatusCode: http.StatusBadRequest,
+				Detail:     "Invalid CLI login session; configure a shared cache for multiple replicas",
+			}
+		}}, nil
+	}
+
+	err := execute(context.Background(), []string{"login", "--no-browser"}, deps)
+	if err == nil {
+		t.Fatal("execute() error = nil")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if got := stderr.String(); !strings.Contains(got, "configure a shared cache") ||
+		strings.Contains(got, "litellm-auth failed") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
 func TestLoginPassesGlobalOptions(t *testing.T) {
 	store := new(fakeStore)
 	deps, _, _ := testDependencies(store)

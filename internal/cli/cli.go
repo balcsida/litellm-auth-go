@@ -466,6 +466,7 @@ func printEvent(output io.Writer, event litellmauth.Event) {
 
 func printError(output io.Writer, err error) {
 	var teamErr *litellmauth.TeamRequiredError
+	var httpErr *litellmauth.HTTPError
 	switch {
 	case errors.Is(err, litellmauth.ErrNoCredential):
 		fmt.Fprintln(output, "Not authenticated: no stored LiteLLM credential.")
@@ -483,6 +484,13 @@ func printError(output io.Writer, err error) {
 		fmt.Fprintln(output, litellmauth.ErrProtocol)
 	case errors.Is(err, litellmauth.ErrUnsupportedProxy):
 		fmt.Fprintln(output, litellmauth.ErrUnsupportedProxy)
+	case errors.As(err, &httpErr):
+		detail := httpErr.SafeDetail()
+		if detail != "" {
+			fmt.Fprintf(output, "LiteLLM authentication failed: %s\n", detail)
+		} else {
+			fmt.Fprintf(output, "LiteLLM authentication failed: HTTP %d.\n", httpErr.StatusCode)
+		}
 	case errors.Is(err, litellmauth.ErrLoginExpired), errors.Is(err, context.DeadlineExceeded):
 		fmt.Fprintln(output, "LiteLLM CLI login timed out.")
 	default:
