@@ -480,8 +480,6 @@ func printError(output io.Writer, err error) {
 		fmt.Fprintf(output, "Team selection required; rerun with --team <team-id>. Available: %s\n", strings.Join(available, ", "))
 	case errors.Is(err, litellmauth.ErrOriginMismatch):
 		fmt.Fprintln(output, litellmauth.ErrOriginMismatch)
-	case errors.Is(err, litellmauth.ErrProtocol):
-		fmt.Fprintln(output, litellmauth.ErrProtocol)
 	case errors.Is(err, litellmauth.ErrUnsupportedProxy):
 		fmt.Fprintln(output, litellmauth.ErrUnsupportedProxy)
 	case errors.As(err, &httpErr):
@@ -491,6 +489,8 @@ func printError(output io.Writer, err error) {
 		} else {
 			fmt.Fprintf(output, "LiteLLM authentication failed: HTTP %d.\n", httpErr.StatusCode)
 		}
+	case errors.Is(err, litellmauth.ErrProtocol):
+		fmt.Fprintln(output, litellmauth.ErrProtocol)
 	case errors.Is(err, litellmauth.ErrLoginExpired), errors.Is(err, context.DeadlineExceeded):
 		fmt.Fprintln(output, "LiteLLM CLI login timed out.")
 	default:

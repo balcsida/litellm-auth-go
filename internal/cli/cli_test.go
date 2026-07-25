@@ -144,6 +144,30 @@ func TestCLIPrintsSafeHTTPErrorDetail(t *testing.T) {
 	}
 }
 
+func TestCLIHTTPErrorPrecedence(t *testing.T) {
+	httpErr := &litellmauth.HTTPError{
+		Op:         "poll",
+		StatusCode: http.StatusBadRequest,
+		Detail:     "configure a shared cache",
+	}
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "protocol", err: errors.Join(httpErr, litellmauth.ErrProtocol), want: "LiteLLM authentication failed: configure a shared cache\n"},
+		{name: "unsupported proxy", err: errors.Join(httpErr, litellmauth.ErrUnsupportedProxy), want: litellmauth.ErrUnsupportedProxy.Error() + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			printError(&output, test.err)
+			if got := output.String(); got != test.want {
+				t.Fatalf("printError() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestLoginPassesGlobalOptions(t *testing.T) {
 	store := new(fakeStore)
 	deps, _, _ := testDependencies(store)
