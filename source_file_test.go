@@ -60,6 +60,21 @@ func TestTokenFileSourceRejectsMissingOversizedAndWhitespace(t *testing.T) {
 	}
 }
 
+func TestTokenFileSourceRejectsBareCarriageReturn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("secret-token\r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewTokenFileSource(path, SourceConfig{NonExpiring: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Credential(context.Background()); !errors.Is(err, ErrInvalidCredential) ||
+		strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), path) {
+		t.Fatalf("bare CR error = %v", err)
+	}
+}
+
 func TestTokenFileSourceHonorsCanceledContext(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(path, []byte("sk-key"), 0o600); err != nil {

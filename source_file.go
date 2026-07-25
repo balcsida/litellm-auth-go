@@ -63,8 +63,12 @@ func (s *TokenFileSource) Credential(ctx context.Context) (Credential, error) {
 		return Credential{}, ErrSourceOutput
 	}
 
-	key := strings.TrimSuffix(string(data), "\n")
-	key = strings.TrimSuffix(key, "\r")
+	key := string(data)
+	if strings.HasSuffix(key, "\r\n") {
+		key = strings.TrimSuffix(key, "\r\n")
+	} else {
+		key = strings.TrimSuffix(key, "\n")
+	}
 	if key == "" {
 		return Credential{}, ErrSourceUnavailable
 	}
