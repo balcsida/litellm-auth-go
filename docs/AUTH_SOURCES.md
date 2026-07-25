@@ -11,8 +11,9 @@ request.
 ### LiteLLM CLI SSO
 
 Use `NewSSOSource` with the existing `Client` and `AuthenticateOptions`.
-The adapter caches a fresh SSO credential and reauthenticates only after expiry
-or an explicit `Invalidate` call.
+The adapter caches a fresh SSO credential and reauthenticates when the cached
+credential is no longer fresh (including the expiry safety margin) or after an
+explicit `Invalidate` call.
 
 ### Static
 
