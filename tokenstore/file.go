@@ -37,31 +37,45 @@ type FileStore struct {
 }
 
 type diskCredential struct {
-	BaseURL             string          `json:"base_url"`
-	Key                 string          `json:"key"`
-	UserID              string          `json:"user_id"`
-	Timestamp           json.RawMessage `json:"timestamp"`
-	TeamID              string          `json:"team_id"`
-	Teams               json.RawMessage `json:"teams"`
-	TeamAlias           string          `json:"team_alias"`
-	TeamDetails         json.RawMessage `json:"team_details"`
-	AttributionMetadata json.RawMessage `json:"attribution_metadata"`
+	BaseURL             string                 `json:"base_url"`
+	Key                 string                 `json:"key"`
+	AuthMethod          litellmauth.AuthMethod `json:"auth_method,omitempty"`
+	TokenType           string                 `json:"token_type,omitempty"`
+	Issuer              string                 `json:"issuer,omitempty"`
+	Subject             string                 `json:"subject,omitempty"`
+	Scopes              []string               `json:"scopes,omitempty"`
+	ExpiresAt           string                 `json:"expires_at,omitempty"`
+	NonExpiring         bool                   `json:"non_expiring,omitempty"`
+	UserID              string                 `json:"user_id"`
+	Timestamp           json.RawMessage        `json:"timestamp"`
+	TeamID              string                 `json:"team_id"`
+	Teams               json.RawMessage        `json:"teams"`
+	TeamAlias           string                 `json:"team_alias"`
+	TeamDetails         json.RawMessage        `json:"team_details"`
+	AttributionMetadata json.RawMessage        `json:"attribution_metadata"`
 }
 
 type savedCredential struct {
-	BaseURL             string         `json:"base_url"`
-	Key                 string         `json:"key"`
-	UserID              string         `json:"user_id"`
-	UserEmail           string         `json:"user_email"`
-	UserRole            string         `json:"user_role"`
-	AuthHeaderName      string         `json:"auth_header_name"`
-	JWTToken            string         `json:"jwt_token"`
-	Timestamp           json.Number    `json:"timestamp"`
-	TeamID              string         `json:"team_id"`
-	Teams               []string       `json:"teams"`
-	TeamAlias           string         `json:"team_alias,omitempty"`
-	TeamDetails         []teamDetail   `json:"team_details,omitempty"`
-	AttributionMetadata map[string]any `json:"attribution_metadata"`
+	BaseURL             string                 `json:"base_url"`
+	Key                 string                 `json:"key"`
+	AuthMethod          litellmauth.AuthMethod `json:"auth_method,omitempty"`
+	TokenType           string                 `json:"token_type,omitempty"`
+	Issuer              string                 `json:"issuer,omitempty"`
+	Subject             string                 `json:"subject,omitempty"`
+	Scopes              []string               `json:"scopes,omitempty"`
+	ExpiresAt           string                 `json:"expires_at,omitempty"`
+	NonExpiring         bool                   `json:"non_expiring,omitempty"`
+	UserID              string                 `json:"user_id"`
+	UserEmail           string                 `json:"user_email"`
+	UserRole            string                 `json:"user_role"`
+	AuthHeaderName      string                 `json:"auth_header_name"`
+	JWTToken            string                 `json:"jwt_token"`
+	Timestamp           json.Number            `json:"timestamp"`
+	TeamID              string                 `json:"team_id"`
+	Teams               []string               `json:"teams"`
+	TeamAlias           string                 `json:"team_alias,omitempty"`
+	TeamDetails         []teamDetail           `json:"team_details,omitempty"`
+	AttributionMetadata map[string]any         `json:"attribution_metadata"`
 }
 
 type teamDetail struct {
@@ -215,10 +229,16 @@ func (s *FileStore) Delete(ctx context.Context) error {
 
 func (d diskCredential) credential() (litellmauth.Credential, error) {
 	credential := litellmauth.Credential{
-		Key:       d.Key,
-		UserID:    d.UserID,
-		TeamID:    d.TeamID,
-		TeamAlias: d.TeamAlias,
+		Key:         d.Key,
+		UserID:      d.UserID,
+		TeamID:      d.TeamID,
+		TeamAlias:   d.TeamAlias,
+		AuthMethod:  d.AuthMethod,
+		TokenType:   d.TokenType,
+		Issuer:      d.Issuer,
+		Subject:     d.Subject,
+		Scopes:      append([]string(nil), d.Scopes...),
+		NonExpiring: d.NonExpiring,
 	}
 	if credential.AuthorizationHeader() == "" {
 		return litellmauth.Credential{}, invalidFile()
@@ -234,12 +254,26 @@ func (d diskCredential) credential() (litellmauth.Credential, error) {
 	if credential.IssuedAt, err = parseTimestamp(d.Timestamp); err != nil {
 		return litellmauth.Credential{}, invalidFile()
 	}
-	credential.ExpiresAt = credential.Expiry()
+	if d.ExpiresAt != "" {
+		expiresAt, err := time.Parse(time.RFC3339Nano, d.ExpiresAt)
+		if err != nil {
+			return litellmauth.Credential{}, invalidFile()
+		}
+		credential.ExpiresAt = expiresAt
+	} else {
+		credential.ExpiresAt = credential.Expiry()
+	}
 	if credential.Teams, err = parseTeams(d.Teams, d.TeamDetails, d.TeamID, d.TeamAlias); err != nil {
 		return litellmauth.Credential{}, invalidFile()
 	}
 	if credential.AttributionMetadata, err = parseMetadata(d.AttributionMetadata); err != nil {
 		return litellmauth.Credential{}, invalidFile()
+	}
+	if err := credential.Validate(); err != nil {
+		if !(errors.Is(err, litellmauth.ErrCredentialExpiryUnknown) &&
+			credential.AuthMethod == "") {
+			return litellmauth.Credential{}, err
+		}
 	}
 	if credentialMetadataContainsKey(credential) {
 		return litellmauth.Credential{}, invalidFile()
@@ -248,8 +282,14 @@ func (d diskCredential) credential() (litellmauth.Credential, error) {
 }
 
 func credentialForSave(credential litellmauth.Credential) (savedCredential, error) {
-	if credential.AuthorizationHeader() == "" || credential.BaseURL == "" {
+	if credential.BaseURL == "" {
 		return savedCredential{}, invalidFile()
+	}
+	if credential.AuthMethod == "" && credential.NonExpiring {
+		return savedCredential{}, litellmauth.ErrInvalidCredential
+	}
+	if err := credential.Validate(); err != nil {
+		return savedCredential{}, err
 	}
 	normalized, err := baseurl.Normalize(credential.BaseURL)
 	if err != nil {
@@ -264,6 +304,12 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 	saved := savedCredential{
 		BaseURL:             normalized.String(),
 		Key:                 credential.Key,
+		AuthMethod:          credential.AuthMethod,
+		TokenType:           credential.TokenType,
+		Issuer:              credential.Issuer,
+		Subject:             credential.Subject,
+		Scopes:              append([]string(nil), credential.Scopes...),
+		NonExpiring:         credential.NonExpiring,
 		UserID:              credential.UserID,
 		UserEmail:           "unknown",
 		UserRole:            "cli",
@@ -273,6 +319,9 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 		TeamID:              credential.TeamID,
 		Teams:               make([]string, 0, len(credential.Teams)),
 		AttributionMetadata: credential.AttributionMetadata,
+	}
+	if !credential.ExpiresAt.IsZero() {
+		saved.ExpiresAt = credential.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
 	if saved.AttributionMetadata == nil {
 		saved.AttributionMetadata = map[string]any{}
@@ -295,8 +344,15 @@ func credentialMetadataContainsKey(credential litellmauth.Credential) bool {
 		return credential.Key != "" && strings.Contains(value, credential.Key)
 	}
 	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
-		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) {
+		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) ||
+		containsKey(string(credential.AuthMethod)) || containsKey(credential.TokenType) ||
+		containsKey(credential.Issuer) || containsKey(credential.Subject) {
 		return true
+	}
+	for _, scope := range credential.Scopes {
+		if containsKey(scope) {
+			return true
+		}
 	}
 	for _, team := range credential.Teams {
 		if containsKey(team.ID) || containsKey(team.Alias) {
