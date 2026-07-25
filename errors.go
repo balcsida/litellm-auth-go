@@ -62,9 +62,17 @@ func (e HTTPError) Error() string {
 // GoString returns a safe summary of the HTTP error.
 func (e HTTPError) GoString() string { return e.Error() }
 
-// SafeDetail returns bounded, control-free, secret-redacted proxy detail.
+// SafeDetail returns explicitly recognized, safe proxy guidance.
 func (e HTTPError) SafeDetail() string {
-	return safeHTTPErrorDetail(e.Detail)
+	switch detail := safeHTTPErrorDetail(e.Detail); detail {
+	case "configure shared cache",
+		"configure a shared cache",
+		"Invalid CLI login session; use a shared cache for multiple replicas",
+		"Invalid CLI login session; configure a shared cache for multiple replicas":
+		return detail
+	default:
+		return ""
+	}
 }
 
 // Unwrap returns ErrLoginExpired for expired login sessions.

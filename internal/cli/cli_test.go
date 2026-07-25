@@ -144,6 +144,19 @@ func TestCLIPrintsSafeHTTPErrorDetail(t *testing.T) {
 	}
 }
 
+func TestCLIRejectsUnrecognizedHTTPErrorDetail(t *testing.T) {
+	var output bytes.Buffer
+	printError(&output, &litellmauth.HTTPError{
+		Op:         "poll",
+		StatusCode: http.StatusBadRequest,
+		Detail:     "api_token_abc123",
+	})
+
+	if got, want := output.String(), "LiteLLM authentication failed: HTTP 400.\n"; got != want {
+		t.Fatalf("printError() = %q, want %q", got, want)
+	}
+}
+
 func TestCLIHTTPErrorPrecedence(t *testing.T) {
 	httpErr := &litellmauth.HTTPError{
 		Op:         "poll",

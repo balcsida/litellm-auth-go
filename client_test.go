@@ -125,17 +125,20 @@ func TestHTTPErrorSafeDetailSanitizesConstructedErrors(t *testing.T) {
 	err := HTTPError{
 		Op:         "poll",
 		StatusCode: http.StatusBadRequest,
-		Detail:     "configure shared cache\nsk-secret eyJhbGciOiJIUzI1NiJ9.payload.signature",
+		Detail:     "Invalid CLI login session; configure a shared cache for multiple replicas",
 	}
 
 	got := err.SafeDetail()
-	if !strings.Contains(got, "configure shared cache") {
+	if !strings.Contains(got, "configure a shared cache") {
 		t.Fatalf("SafeDetail() = %q", got)
 	}
-	for _, forbidden := range []string{"\n", "sk-secret", "eyJhbGciOiJIUzI1NiJ9.payload.signature"} {
-		if strings.Contains(got, forbidden) {
-			t.Fatalf("SafeDetail() leaked %q: %q", forbidden, got)
-		}
+}
+
+func TestHTTPErrorSafeDetailRejectsUnrecognizedDetail(t *testing.T) {
+	err := HTTPError{Op: "poll", StatusCode: http.StatusBadRequest, Detail: "api_token_abc123"}
+
+	if got := err.SafeDetail(); got != "" {
+		t.Fatalf("SafeDetail() = %q, want empty", got)
 	}
 }
 
