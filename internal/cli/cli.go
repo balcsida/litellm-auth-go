@@ -345,6 +345,9 @@ func printCredential(output io.Writer, heading string, credential litellmauth.Cr
 	}
 	fmt.Fprintln(output, heading)
 	fmt.Fprintf(output, "Base URL: %s\n", safe(credential.BaseURL))
+	if credential.AuthMethod != "" {
+		fmt.Fprintf(output, "Method: %s\n", safe(string(credential.AuthMethod)))
+	}
 	fmt.Fprintf(output, "User ID: %s\n", safe(credential.UserID))
 	if credential.TeamID != "" || credential.TeamAlias != "" {
 		fmt.Fprintf(output, "Team: %s\n", teamLabel(litellmauth.Team{ID: credential.TeamID, Alias: credential.TeamAlias}))
@@ -369,21 +372,33 @@ func printCredentialJSON(output io.Writer, credential litellmauth.Credential, no
 	}
 	expiresAt := credential.Expiry()
 	identity := struct {
-		Authenticated       bool           `json:"authenticated"`
-		BaseURL             string         `json:"base_url"`
-		UserID              string         `json:"user_id"`
-		TeamID              string         `json:"team_id,omitempty"`
-		TeamAlias           string         `json:"team_alias,omitempty"`
-		IssuedAt            string         `json:"issued_at,omitempty"`
-		ExpiresAt           string         `json:"expires_at,omitempty"`
-		Fresh               bool           `json:"fresh"`
-		AttributionMetadata map[string]any `json:"attribution_metadata,omitempty"`
+		Authenticated       bool                   `json:"authenticated"`
+		BaseURL             string                 `json:"base_url"`
+		UserID              string                 `json:"user_id"`
+		TeamID              string                 `json:"team_id,omitempty"`
+		TeamAlias           string                 `json:"team_alias,omitempty"`
+		AuthMethod          litellmauth.AuthMethod `json:"auth_method,omitempty"`
+		TokenType           string                 `json:"token_type,omitempty"`
+		Issuer              string                 `json:"issuer,omitempty"`
+		Subject             string                 `json:"subject,omitempty"`
+		Scopes              []string               `json:"scopes,omitempty"`
+		NonExpiring         bool                   `json:"non_expiring,omitempty"`
+		IssuedAt            string                 `json:"issued_at,omitempty"`
+		ExpiresAt           string                 `json:"expires_at,omitempty"`
+		Fresh               bool                   `json:"fresh"`
+		AttributionMetadata map[string]any         `json:"attribution_metadata,omitempty"`
 	}{
 		Authenticated:       true,
 		BaseURL:             credential.BaseURL,
 		UserID:              credential.UserID,
 		TeamID:              credential.TeamID,
 		TeamAlias:           credential.TeamAlias,
+		AuthMethod:          credential.AuthMethod,
+		TokenType:           credential.TokenType,
+		Issuer:              credential.Issuer,
+		Subject:             credential.Subject,
+		Scopes:              append([]string(nil), credential.Scopes...),
+		NonExpiring:         credential.NonExpiring,
 		Fresh:               credential.Fresh(now),
 		AttributionMetadata: credential.AttributionMetadata,
 	}
@@ -410,8 +425,15 @@ func credentialSafeForOutput(credential litellmauth.Credential) bool {
 		return strings.Contains(value, credential.Key)
 	}
 	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
-		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) {
+		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) ||
+		containsKey(string(credential.AuthMethod)) || containsKey(credential.TokenType) ||
+		containsKey(credential.Issuer) || containsKey(credential.Subject) {
 		return false
+	}
+	for _, scope := range credential.Scopes {
+		if containsKey(scope) {
+			return false
+		}
 	}
 	for _, team := range credential.Teams {
 		if containsKey(team.ID) || containsKey(team.Alias) {

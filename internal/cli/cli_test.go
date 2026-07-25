@@ -608,6 +608,53 @@ func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
 	}
 }
 
+func TestWhoamiShowsAuthenticationMethodWithoutKey(t *testing.T) {
+	credential := successfulCredential()
+	credential.AuthMethod = litellmauth.AuthMethodEnvironment
+	credential.TokenType = "Bearer"
+	credential.NonExpiring = true
+	store := &fakeStore{credential: credential}
+	deps, stdout, stderr := testDependencies(store)
+
+	if err := execute(context.Background(), []string{"whoami"}, deps); err != nil {
+		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
+	}
+	if got := stdout.String(); !strings.Contains(got, "Method: env") ||
+		strings.Contains(got, credential.Key) {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestWhoamiJSONIncludesGenericMetadata(t *testing.T) {
+	credential := successfulCredential()
+	credential.AuthMethod = litellmauth.AuthMethodExec
+	credential.TokenType = "Bearer"
+	credential.Issuer = "https://issuer.example.com"
+	credential.Subject = "service-1"
+	credential.Scopes = []string{"litellm.invoke"}
+	credential.NonExpiring = true
+	store := &fakeStore{credential: credential}
+	deps, stdout, stderr := testDependencies(store)
+
+	if err := execute(context.Background(), []string{"whoami", "--json"}, deps); err != nil {
+		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["auth_method"] != "exec" ||
+		got["token_type"] != "Bearer" ||
+		got["issuer"] != credential.Issuer ||
+		got["subject"] != credential.Subject ||
+		got["non_expiring"] != true {
+		t.Fatalf("JSON = %#v", got)
+	}
+	if _, exists := got["key"]; exists {
+		t.Fatalf("JSON exposed key: %#v", got)
+	}
+}
+
 func TestWhoamiJSONRejectsUnsafeMetadata(t *testing.T) {
 	for _, test := range []struct {
 		name     string
