@@ -44,8 +44,10 @@ type SSOSource struct {
 	options AuthenticateOptions
 	now     func() time.Time
 
-	mu     sync.Mutex
-	cached *Credential
+	mu         sync.Mutex
+	cached     *Credential
+	inFlight   chan struct{}
+	generation uint64
 }
 
 // NewSSOSource creates an SSO source.
@@ -69,32 +71,55 @@ func (s *SSOSource) Credential(ctx context.Context) (Credential, error) {
 		return Credential{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return Credential{}, err
-	}
+	for {
+		s.mu.Lock()
+		if s.cached != nil && s.cached.Fresh(s.now()) {
+			credential := s.cached.Clone()
+			s.mu.Unlock()
+			return credential, nil
+		}
+		if s.inFlight != nil {
+			inFlight := s.inFlight
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return Credential{}, ctx.Err()
+			case <-inFlight:
+				continue
+			}
+		}
 
-	if s.cached != nil && s.cached.Fresh(s.now()) {
-		return s.cached.Clone(), nil
+		inFlight := make(chan struct{})
+		s.inFlight = inFlight
+		generation := s.generation
+		s.mu.Unlock()
+
+		credential, err := s.client.Authenticate(ctx, s.options)
+		if err == nil {
+			credential.AuthMethod = AuthMethodLiteLLMSSO
+			if credential.TokenType == "" {
+				credential.TokenType = "Bearer"
+			}
+			err = credential.Validate()
+		}
+		if err == nil && !credential.Fresh(s.now()) {
+			err = ErrCredentialStale
+		}
+
+		s.mu.Lock()
+		if err == nil && generation == s.generation {
+			cloned := credential.Clone()
+			s.cached = &cloned
+		}
+		close(inFlight)
+		s.inFlight = nil
+		s.mu.Unlock()
+
+		if err != nil {
+			return Credential{}, err
+		}
+		return credential.Clone(), nil
 	}
-	credential, err := s.client.Authenticate(ctx, s.options)
-	if err != nil {
-		return Credential{}, err
-	}
-	credential.AuthMethod = AuthMethodLiteLLMSSO
-	if credential.TokenType == "" {
-		credential.TokenType = "Bearer"
-	}
-	if err := credential.Validate(); err != nil {
-		return Credential{}, err
-	}
-	if !credential.Fresh(s.now()) {
-		return Credential{}, ErrCredentialStale
-	}
-	cloned := credential.Clone()
-	s.cached = &cloned
-	return credential.Clone(), nil
 }
 
 // Invalidate clears the cached SSO credential.
@@ -104,6 +129,7 @@ func (s *SSOSource) Invalidate() {
 	}
 	s.mu.Lock()
 	s.cached = nil
+	s.generation++
 	s.mu.Unlock()
 }
 

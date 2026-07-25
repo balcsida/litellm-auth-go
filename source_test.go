@@ -171,13 +171,21 @@ func TestSSOSourceCanceledWhileWaitingForCredential(t *testing.T) {
 	}()
 	<-checked
 	cancel()
-	close(release)
 
+	select {
+	case err := <-secondErr:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Credential() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		<-firstErr
+		t.Fatal("Credential() did not return after cancellation")
+	}
+
+	close(release)
 	if err := <-firstErr; err != nil {
 		t.Fatal(err)
-	}
-	if err := <-secondErr; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Credential() error = %v", err)
 	}
 }
 
