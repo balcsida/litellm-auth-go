@@ -129,3 +129,7 @@ The examples compile without an OpenAI SDK:
 ```sh
 go test ./examples/...
 ```
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).
