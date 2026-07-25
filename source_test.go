@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,4 +125,70 @@ func TestSSOSourceCachesFreshCredentialAndCanInvalidate(t *testing.T) {
 	if requests != 4 {
 		t.Fatalf("requests after invalidate = %d, want 4", requests)
 	}
+}
+
+func TestSSOSourceCanceledWhileWaitingForCredential(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			close(started)
+			<-release
+			_, _ = io.WriteString(w, `{"login_id":"login-1","poll_secret":"secret","user_code":"CODE","expires_in":60}`)
+		case http.MethodGet:
+			_, _ = io.WriteString(w, `{"status":"ready","key":"sk-sso"}`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, WithHTTPClient(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewSSOSource(client, AuthenticateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, err := source.Credential(context.Background())
+		firstErr <- err
+	}()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	checked := make(chan struct{})
+	waitingCtx := &notifyingContext{Context: ctx, checked: checked}
+	secondErr := make(chan error, 1)
+	go func() {
+		_, err := source.Credential(waitingCtx)
+		secondErr <- err
+	}()
+	<-checked
+	cancel()
+	close(release)
+
+	if err := <-firstErr; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Credential() error = %v", err)
+	}
+}
+
+type notifyingContext struct {
+	context.Context
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (c *notifyingContext) Err() error {
+	err := c.Context.Err()
+	c.once.Do(func() { close(c.checked) })
+	return err
 }

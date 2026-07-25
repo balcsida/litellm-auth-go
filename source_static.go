@@ -71,6 +71,9 @@ func (s *SSOSource) Credential(ctx context.Context) (Credential, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Credential{}, err
+	}
 
 	if s.cached != nil && s.cached.Fresh(s.now()) {
 		return s.cached.Clone(), nil
