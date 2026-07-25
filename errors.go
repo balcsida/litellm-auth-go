@@ -29,6 +29,14 @@ var (
 	ErrCredentialStale = errors.New("stored LiteLLM credential is expired")
 	// ErrOriginMismatch reports a credential issued by a different proxy URL.
 	ErrOriginMismatch = errors.New("stored credential belongs to a different LiteLLM proxy")
+	// ErrInvalidCredential reports a malformed or contradictory credential.
+	ErrInvalidCredential = errors.New("invalid authentication credential")
+	// ErrCredentialExpiryUnknown reports a credential without a known or explicitly unlimited lifetime.
+	ErrCredentialExpiryUnknown = errors.New("authentication credential expiry is unknown")
+	// ErrSourceUnavailable reports a configured source that did not produce a credential.
+	ErrSourceUnavailable = errors.New("authentication source did not produce a credential")
+	// ErrSourceOutput reports invalid external source output.
+	ErrSourceOutput = errors.New("invalid authentication source output")
 )
 
 // HTTPError describes a non-successful LiteLLM CLI SSO response.

@@ -4,9 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+	"unicode"
+)
+
+const maxCredentialKeyBytes = 1 << 20
+
+// AuthMethod identifies how a credential was acquired.
+type AuthMethod string
+
+const (
+	AuthMethodLiteLLMSSO  AuthMethod = "litellm-cli-sso"
+	AuthMethodStatic      AuthMethod = "static"
+	AuthMethodEnvironment AuthMethod = "env"
+	AuthMethodFile        AuthMethod = "file"
+	AuthMethodExec        AuthMethod = "exec"
+	AuthMethodStdin       AuthMethod = "stdin"
 )
 
 // Client authenticates with one normalized LiteLLM proxy base URL.
@@ -83,6 +100,18 @@ type Credential struct {
 	BaseURL string `json:"base_url"`
 	// Key is the bearer token returned by LiteLLM.
 	Key string `json:"key"`
+	// AuthMethod identifies how Key was acquired.
+	AuthMethod AuthMethod `json:"auth_method,omitempty"`
+	// TokenType is the authorization scheme; empty means Bearer for compatibility.
+	TokenType string `json:"token_type,omitempty"`
+	// Issuer is optional non-secret identity-provider metadata.
+	Issuer string `json:"issuer,omitempty"`
+	// Subject is optional non-secret subject metadata.
+	Subject string `json:"subject,omitempty"`
+	// Scopes contains optional non-secret OAuth scopes.
+	Scopes []string `json:"scopes,omitempty"`
+	// NonExpiring explicitly marks a credential without a known expiry.
+	NonExpiring bool `json:"non_expiring,omitempty"`
 	// UserID is the authenticated user's proxy identifier.
 	UserID string `json:"user_id"`
 	// TeamID is the selected team identifier, when one applies.
@@ -105,11 +134,87 @@ func (Credential) String() string { return "LiteLLM credential" }
 // GoString returns a secret-free credential description.
 func (c Credential) GoString() string { return c.String() }
 
+// Clone returns an independent credential copy.
+func (c Credential) Clone() Credential {
+	cloned := c
+	cloned.Scopes = append([]string(nil), c.Scopes...)
+	cloned.Teams = append([]Team(nil), c.Teams...)
+	if c.AttributionMetadata != nil {
+		cloned.AttributionMetadata = make(map[string]any, len(c.AttributionMetadata))
+		for key, value := range c.AttributionMetadata {
+			cloned.AttributionMetadata[key] = value
+		}
+	}
+	return cloned
+}
+
+// Validate checks token formatting and lifetime semantics without contacting a server.
+func (c Credential) Validate() error {
+	if len(c.Key) > maxCredentialKeyBytes ||
+		c.AuthorizationHeader() == "" ||
+		containsControl(c.BaseURL) ||
+		containsControl(string(c.AuthMethod)) ||
+		containsControl(c.Issuer) ||
+		containsControl(c.Subject) ||
+		containsControl(c.UserID) ||
+		containsControl(c.TeamID) ||
+		containsControl(c.TeamAlias) {
+		return ErrInvalidCredential
+	}
+	for _, team := range c.Teams {
+		if team.ID == "" || containsControl(team.ID) || containsControl(team.Alias) {
+			return ErrInvalidCredential
+		}
+	}
+	for _, scope := range c.Scopes {
+		if scope == "" || containsControl(scope) {
+			return ErrInvalidCredential
+		}
+	}
+	for key, value := range c.AttributionMetadata {
+		if key == "" || containsControl(key) {
+			return ErrInvalidCredential
+		}
+		switch typed := value.(type) {
+		case string:
+			if containsControl(typed) {
+				return ErrInvalidCredential
+			}
+		case bool:
+		case float64:
+			if math.IsNaN(typed) || math.IsInf(typed, 0) {
+				return ErrInvalidCredential
+			}
+		default:
+			return ErrInvalidCredential
+		}
+	}
+	if c.NonExpiring {
+		if !c.ExpiresAt.IsZero() {
+			return ErrInvalidCredential
+		}
+		if _, ok := jwtExpiry(c.Key); ok {
+			return ErrInvalidCredential
+		}
+		return nil
+	}
+	if c.Expiry().IsZero() {
+		return ErrCredentialExpiryUnknown
+	}
+	return nil
+}
+
 // UnmarshalJSON decodes a credential while rejecting invalid metadata.
 func (c *Credential) UnmarshalJSON(data []byte) error {
 	var decoded struct {
 		BaseURL             string          `json:"base_url"`
 		Key                 string          `json:"key"`
+		AuthMethod          AuthMethod      `json:"auth_method"`
+		TokenType           string          `json:"token_type"`
+		Issuer              string          `json:"issuer"`
+		Subject             string          `json:"subject"`
+		Scopes              []string        `json:"scopes"`
+		NonExpiring         bool            `json:"non_expiring"`
 		UserID              string          `json:"user_id"`
 		TeamID              string          `json:"team_id"`
 		TeamAlias           string          `json:"team_alias"`
@@ -120,6 +225,17 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
+	}
+	if containsControl(string(decoded.AuthMethod)) ||
+		containsControl(decoded.TokenType) ||
+		containsControl(decoded.Issuer) ||
+		containsControl(decoded.Subject) {
+		return fmt.Errorf("%w: credential metadata contains control characters", ErrProtocol)
+	}
+	for _, scope := range decoded.Scopes {
+		if containsControl(scope) {
+			return fmt.Errorf("%w: credential scope contains control characters", ErrProtocol)
+		}
 	}
 	var metadata map[string]any
 	if decoded.AttributionMetadata != nil {
@@ -137,6 +253,12 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 	*c = Credential{
 		BaseURL:             decoded.BaseURL,
 		Key:                 decoded.Key,
+		AuthMethod:          decoded.AuthMethod,
+		TokenType:           decoded.TokenType,
+		Issuer:              decoded.Issuer,
+		Subject:             decoded.Subject,
+		Scopes:              append([]string(nil), decoded.Scopes...),
+		NonExpiring:         decoded.NonExpiring,
 		UserID:              decoded.UserID,
 		TeamID:              decoded.TeamID,
 		TeamAlias:           decoded.TeamAlias,
@@ -147,6 +269,10 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 	}
 	c.ExpiresAt = c.Expiry()
 	return nil
+}
+
+func containsControl(value string) bool {
+	return strings.IndexFunc(value, unicode.IsControl) >= 0
 }
 
 // TeamSelector chooses one ID from the teams supplied by the proxy.

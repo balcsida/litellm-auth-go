@@ -378,3 +378,23 @@ func (b *errorBody) Read(p []byte) (int, error) {
 }
 
 func (*errorBody) Close() error { return nil }
+
+func TestCredentialCloneCopiesSlicesAndMetadata(t *testing.T) {
+	original := Credential{
+		Key:                 "sk-key",
+		Scopes:              []string{"scope-a"},
+		Teams:               []Team{{ID: "team-1"}},
+		AttributionMetadata: map[string]any{"department": "Platform"},
+	}
+	cloned := original.Clone()
+
+	cloned.Scopes[0] = "changed"
+	cloned.Teams[0].ID = "changed"
+	cloned.AttributionMetadata["department"] = "changed"
+
+	if original.Scopes[0] != "scope-a" ||
+		original.Teams[0].ID != "team-1" ||
+		original.AttributionMetadata["department"] != "Platform" {
+		t.Fatalf("Clone() shared mutable state: original=%#v cloned=%#v", original, cloned)
+	}
+}
