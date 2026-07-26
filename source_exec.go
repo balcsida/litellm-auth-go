@@ -105,12 +105,16 @@ func (s *ExecSource) Credential(ctx context.Context) (Credential, error) {
 	command := exec.CommandContext(runCtx, s.path, s.args...)
 	command.Env = s.environment()
 	command.Stderr = io.Discard
+	command.WaitDelay = s.timeout
 
 	var output limitedBuffer
 	output.limit = s.maxOutputBytes
 	command.Stdout = &output
 
 	if err := command.Run(); err != nil {
+		if errors.Is(err, exec.ErrWaitDelay) {
+			return Credential{}, ErrSourceOutput
+		}
 		if runCtx.Err() != nil {
 			return Credential{}, runCtx.Err()
 		}

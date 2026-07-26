@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,19 @@ func TestExecSourceHelperProcess(t *testing.T) {
 		fmt.Fprint(os.Stdout, strings.Repeat("x", defaultExecMaxOutputBytes+1))
 		os.Exit(0)
 	case "sleep":
+		time.Sleep(time.Second)
+		os.Exit(0)
+	case "inherited-stdout":
+		if err := os.Setenv("EXEC_SOURCE_MODE", "descendant"); err != nil {
+			os.Exit(2)
+		}
+		child := exec.Command(os.Args[0], "-test.run=TestExecSourceHelperProcess")
+		child.Stdout = os.Stdout
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	case "descendant":
 		time.Sleep(time.Second)
 		os.Exit(0)
 	default:
@@ -116,6 +130,19 @@ func TestExecSourceTimeout(t *testing.T) {
 	_, err := source.Credential(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Credential() error = %v", err)
+	}
+}
+
+func TestExecSourceBoundsInheritedStdoutWait(t *testing.T) {
+	source := helperExecSource(t, "inherited-stdout")
+	source.timeout = 10 * time.Millisecond
+	start := time.Now()
+	_, err := source.Credential(context.Background())
+	if !errors.Is(err, ErrSourceOutput) && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Credential() error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Credential() took %s", elapsed)
 	}
 }
 
