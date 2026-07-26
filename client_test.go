@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -59,7 +61,7 @@ func TestNewAuthenticationTypesDoNotFormatSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execSource, err := NewExecSource("/helper", []string{"argument-containing-secret"}, ExecSourceConfig{})
+	execSource, err := NewExecSource(filepath.Join(os.TempDir(), "helper"), []string{"argument-containing-secret"}, ExecSourceConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
