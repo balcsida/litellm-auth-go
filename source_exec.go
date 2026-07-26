@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -51,6 +52,9 @@ type execCredentialOutput struct {
 func NewExecSource(path string, args []string, config ExecSourceConfig) (*ExecSource, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("credential helper path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return nil, errors.New("credential helper path must be absolute")
 	}
 	timeout := config.Timeout
 	if timeout == 0 {

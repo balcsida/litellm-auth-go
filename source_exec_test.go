@@ -146,6 +146,12 @@ func TestExecSourceBoundsInheritedStdoutWait(t *testing.T) {
 	}
 }
 
+func TestExecSourceRequiresAbsolutePath(t *testing.T) {
+	if _, err := NewExecSource("credential-helper", nil, ExecSourceConfig{}); err == nil {
+		t.Fatal("NewExecSource() accepted relative helper path")
+	}
+}
+
 func TestExecSourceRejectsInvalidEnvironmentName(t *testing.T) {
 	_, err := NewExecSource(os.Args[0], nil, ExecSourceConfig{
 		AllowedEnv: []string{"BAD=VALUE"},
