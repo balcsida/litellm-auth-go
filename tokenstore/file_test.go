@@ -91,6 +91,76 @@ func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFileStoreRoundTripsGenericCredentialMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials", "token.json")
+	store, err := NewFileStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := litellmauth.Credential{
+		BaseURL:     "https://proxy.example.com",
+		Key:         "sk-static",
+		AuthMethod:  litellmauth.AuthMethodStatic,
+		TokenType:   "Bearer",
+		Issuer:      "https://issuer.example.com",
+		Subject:     "service-1",
+		Scopes:      []string{"litellm.invoke"},
+		IssuedAt:    time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC),
+		NonExpiring: true,
+	}
+	if err := store.Save(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.AuthMethod != credential.AuthMethod ||
+		loaded.TokenType != credential.TokenType ||
+		loaded.Issuer != credential.Issuer ||
+		loaded.Subject != credential.Subject ||
+		!loaded.NonExpiring ||
+		len(loaded.Scopes) != 1 ||
+		loaded.Scopes[0] != "litellm.invoke" {
+		t.Fatalf("loaded = %#v", loaded)
+	}
+}
+
+func TestFileStoreRoundTripsExplicitExpiry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token.json")
+	store, _ := NewFileStore(path)
+	expiresAt := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	credential := litellmauth.Credential{
+		BaseURL:    "https://proxy.example.com",
+		Key:        "sk-expiring",
+		AuthMethod: litellmauth.AuthMethodEnvironment,
+		TokenType:  "Bearer",
+		IssuedAt:   expiresAt.Add(-time.Hour),
+		ExpiresAt:  expiresAt,
+	}
+	if err := store.Save(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background(), nil)
+	if err != nil || !loaded.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("loaded = %#v, %v", loaded, err)
+	}
+}
+
+func TestFileStoreRejectsGenericCredentialWithUnknownExpiry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token.json")
+	store, _ := NewFileStore(path)
+	err := store.Save(context.Background(), litellmauth.Credential{
+		BaseURL:    "https://proxy.example.com",
+		Key:        "sk-unknown",
+		AuthMethod: litellmauth.AuthMethodEnvironment,
+		IssuedAt:   time.Now(),
+	})
+	if !errors.Is(err, litellmauth.ErrCredentialExpiryUnknown) {
+		t.Fatalf("Save() error = %v", err)
+	}
+}
+
 func TestFileStoreLoadOriginBinding(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token.json")
 	store, err := NewFileStore(path)

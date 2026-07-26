@@ -29,6 +29,14 @@ var (
 	ErrCredentialStale = errors.New("stored LiteLLM credential is expired")
 	// ErrOriginMismatch reports a credential issued by a different proxy URL.
 	ErrOriginMismatch = errors.New("stored credential belongs to a different LiteLLM proxy")
+	// ErrInvalidCredential reports a malformed or contradictory credential.
+	ErrInvalidCredential = errors.New("invalid authentication credential")
+	// ErrCredentialExpiryUnknown reports a credential without a known or explicitly unlimited lifetime.
+	ErrCredentialExpiryUnknown = errors.New("authentication credential expiry is unknown")
+	// ErrSourceUnavailable reports a configured source that did not produce a credential.
+	ErrSourceUnavailable = errors.New("authentication source did not produce a credential")
+	// ErrSourceOutput reports invalid external source output.
+	ErrSourceOutput = errors.New("invalid authentication source output")
 )
 
 // HTTPError describes a non-successful LiteLLM CLI SSO response.
@@ -53,6 +61,19 @@ func (e HTTPError) Error() string {
 
 // GoString returns a safe summary of the HTTP error.
 func (e HTTPError) GoString() string { return e.Error() }
+
+// SafeDetail returns explicitly recognized, safe proxy guidance.
+func (e HTTPError) SafeDetail() string {
+	switch detail := safeHTTPErrorDetail(e.Detail); detail {
+	case "configure shared cache",
+		"configure a shared cache",
+		"Invalid CLI login session; use a shared cache for multiple replicas",
+		"Invalid CLI login session; configure a shared cache for multiple replicas":
+		return detail
+	default:
+		return ""
+	}
+}
 
 // Unwrap returns ErrLoginExpired for expired login sessions.
 func (e HTTPError) Unwrap() error {

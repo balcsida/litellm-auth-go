@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"time"
 
+	litellmauth "github.com/balcsida/litellm-auth-go"
 	"github.com/balcsida/litellm-auth-go/tokenstore"
 )
 
@@ -35,6 +37,9 @@ func main() {
 	credential, err := store.Load(context.Background(), proxyURL)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if !credential.Fresh(time.Now()) {
+		log.Fatal(litellmauth.ErrCredentialStale)
 	}
 	if credential.AuthorizationHeader() == "" {
 		log.Fatal(errors.New("stored credential has no valid bearer token"))

@@ -97,6 +97,19 @@ func TestPollOnceParsesReadyCredentialAndTeams(t *testing.T) {
 	}
 }
 
+func TestPollOnceMarksLiteLLMSSOCredentials(t *testing.T) {
+	client := pollClient(t, `{"status":"ready","key":"sk-key"}`)
+	result, err := client.PollOnce(context.Background(), pollSession("secret"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Credential == nil ||
+		result.Credential.AuthMethod != AuthMethodLiteLLMSSO ||
+		result.Credential.TokenType != "Bearer" {
+		t.Fatalf("credential = %#v", result.Credential)
+	}
+}
+
 func TestPollOncePopulatesCredentialExpiry(t *testing.T) {
 	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 	jwtExpiresAt := now.Add(2 * time.Hour)
@@ -1105,6 +1118,40 @@ func TestAuthenticateStartsCallsBackThenAwaitsSilently(t *testing.T) {
 	}})
 	if err != nil || credential.Key != "sk-key" || callbacks != 1 || !polled {
 		t.Fatalf("Authenticate() = %#v, %v; callbacks = %d; polled = %v", credential, err, callbacks, polled)
+	}
+}
+
+func TestAuthenticateBoundsOnSessionBySessionExpiry(t *testing.T) {
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `{"login_id":"login-1","poll_secret":"secret","user_code":"CODE","expires_in":1}`)
+			return
+		}
+		t.Fatalf("unexpected poll request: %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+
+	client, err := New(
+		server.URL,
+		WithHTTPClient(server.Client()),
+		WithMaxWait(20*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Authenticate(context.Background(), AuthenticateOptions{
+		OnSession: func(ctx context.Context, _ Session) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	if !errors.Is(err, ErrLoginExpired) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if len(server.Requests()) != 1 {
+		t.Fatalf("requests = %d, want start only", len(server.Requests()))
 	}
 }
 

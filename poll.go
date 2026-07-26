@@ -186,8 +186,14 @@ func (c *Client) Authenticate(ctx context.Context, options AuthenticateOptions) 
 		return Credential{}, err
 	}
 	if options.OnSession != nil {
-		if err := options.OnSession(ctx, session); err != nil {
-			return Credential{}, err
+		sessionCtx, cancel := context.WithDeadline(ctx, session.expiresAt)
+		callbackErr := options.OnSession(sessionCtx, session)
+		cancel()
+		if callbackErr != nil {
+			if deadlineErr := awaitDeadline(ctx, session, c.now()); deadlineErr != nil {
+				return Credential{}, deadlineErr
+			}
+			return Credential{}, callbackErr
 		}
 	}
 	return c.Await(ctx, session, AwaitOptions{
@@ -376,6 +382,8 @@ func (c *Client) readyPollResult(decoded pollResponse, pollSecret string) (PollR
 		return PollResult{}, protocolError("credential")
 	}
 	credential.BaseURL = c.baseURL
+	credential.AuthMethod = AuthMethodLiteLLMSSO
+	credential.TokenType = "Bearer"
 	credential.IssuedAt = c.now()
 	credential.ExpiresAt = credential.Expiry()
 	credential.Teams = teams

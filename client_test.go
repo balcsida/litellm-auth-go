@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -47,6 +49,98 @@ func TestStartCreatesLegacySession(t *testing.T) {
 	}
 	if got, want := session.VerificationURL.String(), server.URL+"/sso/key/generate?key=login-1&source=litellm-cli"; got != want {
 		t.Fatalf("VerificationURL = %q, want %q", got, want)
+	}
+}
+
+func TestNewAuthenticationTypesDoNotFormatSecrets(t *testing.T) {
+	static, err := NewStaticSource("sk-static-secret", SourceConfig{NonExpiring: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileSource, err := NewTokenFileSource("/tmp/path-containing-secret", SourceConfig{NonExpiring: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSource, err := NewExecSource(filepath.Join(os.TempDir(), "helper"), []string{"argument-containing-secret"}, ExecSourceConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binder, err := NewBearerHeader("Authorization")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := Binding{Source: static, Binder: binder}
+	authenticator, err := NewAuthenticator(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := authenticator.Transport(nil)
+
+	for _, rendered := range []string{
+		fmt.Sprintf("%v", static),
+		fmt.Sprintf("%#v", static),
+		fmt.Sprintf("%v", fileSource),
+		fmt.Sprintf("%#v", fileSource),
+		fmt.Sprintf("%v", execSource),
+		fmt.Sprintf("%#v", execSource),
+		fmt.Sprintf("%v", binder),
+		fmt.Sprintf("%#v", binder),
+		fmt.Sprintf("%v", binding),
+		fmt.Sprintf("%#v", binding),
+		fmt.Sprintf("%v", authenticator),
+		fmt.Sprintf("%#v", authenticator),
+		fmt.Sprintf("%v", transport),
+		fmt.Sprintf("%#v", transport),
+	} {
+		for _, forbidden := range []string{
+			"sk-static-secret",
+			"path-containing-secret",
+			"argument-containing-secret",
+		} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("formatting leaked %q: %q", forbidden, rendered)
+			}
+		}
+	}
+}
+
+func TestAuthenticatorFormattersAreSecretFree(t *testing.T) {
+	authenticator := &Authenticator{}
+	transport := &authTransport{}
+
+	for _, test := range []struct {
+		value any
+		want  string
+	}{
+		{authenticator, "composite authenticator"},
+		{transport, "authenticated HTTP transport"},
+	} {
+		for _, format := range []string{"%v", "%#v"} {
+			if got := fmt.Sprintf(format, test.value); got != test.want {
+				t.Errorf("fmt.Sprintf(%q, %T) = %q, want %q", format, test.value, got, test.want)
+			}
+		}
+	}
+}
+
+func TestHTTPErrorSafeDetailSanitizesConstructedErrors(t *testing.T) {
+	err := HTTPError{
+		Op:         "poll",
+		StatusCode: http.StatusBadRequest,
+		Detail:     "Invalid CLI login session; configure a shared cache for multiple replicas",
+	}
+
+	got := err.SafeDetail()
+	if !strings.Contains(got, "configure a shared cache") {
+		t.Fatalf("SafeDetail() = %q", got)
+	}
+}
+
+func TestHTTPErrorSafeDetailRejectsUnrecognizedDetail(t *testing.T) {
+	err := HTTPError{Op: "poll", StatusCode: http.StatusBadRequest, Detail: "api_token_abc123"}
+
+	if got := err.SafeDetail(); got != "" {
+		t.Fatalf("SafeDetail() = %q, want empty", got)
 	}
 }
 
@@ -360,3 +454,23 @@ func (b *errorBody) Read(p []byte) (int, error) {
 }
 
 func (*errorBody) Close() error { return nil }
+
+func TestCredentialCloneCopiesSlicesAndMetadata(t *testing.T) {
+	original := Credential{
+		Key:                 "sk-key",
+		Scopes:              []string{"scope-a"},
+		Teams:               []Team{{ID: "team-1"}},
+		AttributionMetadata: map[string]any{"department": "Platform"},
+	}
+	cloned := original.Clone()
+
+	cloned.Scopes[0] = "changed"
+	cloned.Teams[0].ID = "changed"
+	cloned.AttributionMetadata["department"] = "changed"
+
+	if original.Scopes[0] != "scope-a" ||
+		original.Teams[0].ID != "team-1" ||
+		original.AttributionMetadata["department"] != "Platform" {
+		t.Fatalf("Clone() shared mutable state: original=%#v cloned=%#v", original, cloned)
+	}
+}

@@ -93,7 +93,29 @@ Other commands are:
 litellm-auth whoami
 litellm-auth print-token
 litellm-auth logout
+litellm-auth import-token
 ```
+
+### Additional credential sources
+
+`login` remains the LiteLLM CLI SSO flow. Use `import-token` to store a token
+from an environment variable, rotating file, stdin, or an external helper:
+
+```sh
+litellm-auth --base-url https://proxy.example.com import-token \
+  --from-env LITELLM_API_KEY --non-expiring
+litellm-auth --base-url https://proxy.example.com import-token \
+  --from-file /var/run/secrets/token --non-expiring
+printf '%s\n' "$LITELLM_API_KEY" | \
+  litellm-auth --base-url https://proxy.example.com import-token \
+  --from-stdin --non-expiring
+litellm-auth --base-url https://proxy.example.com import-token \
+  --from-exec /usr/local/bin/corp-token-helper --exec-arg issue \
+  --exec-env PATH --exec-env HTTPS_PROXY
+```
+
+See [authentication sources and binders](docs/AUTH_SOURCES.md) for lifetime
+rules, external-helper schema, and library usage.
 
 `print-token` only reads a fresh local token; it never logs in, refreshes a
 token, or makes a network request. Use `--base-url` when reading a token for a
@@ -120,7 +142,8 @@ token cannot be loaded for a different proxy origin.
 
 This protocol has no refresh or revocation operation. `logout` removes only the
 local token file; revoke or rotate a server-side key through the LiteLLM proxy
-when that is required. Log in again after a credential expires.
+when that is required. After a credential expires, SSO users rerun `login` and
+imported-token users rerun `import-token` from their configured source.
 
 ## Verification
 
@@ -129,3 +152,7 @@ The examples compile without an OpenAI SDK:
 ```sh
 go test ./examples/...
 ```
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

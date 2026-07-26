@@ -17,6 +17,15 @@ const (
 
 // Fresh reports whether c is valid at now, with a small expiry safety margin.
 func (c Credential) Fresh(now time.Time) bool {
+	if c.AuthMethod != "" &&
+		c.AuthMethod != AuthMethodLiteLLMSSO &&
+		c.AuthorizationHeader() == "" {
+		return false
+	}
+	if c.NonExpiring {
+		_, hasJWTExpiry := jwtExpiry(c.Key)
+		return c.ExpiresAt.IsZero() && !hasJWTExpiry
+	}
 	expiresAt := c.Expiry()
 	if expiresAt.IsZero() {
 		return false
@@ -31,24 +40,52 @@ func (c Credential) Fresh(now time.Time) bool {
 
 // Expiry returns the explicit, JWT, or compatibility expiry for c.
 func (c Credential) Expiry() time.Time {
-	if !c.ExpiresAt.IsZero() {
-		return c.ExpiresAt
-	}
-	if expiresAt, ok := jwtExpiry(c.Key); ok {
-		return expiresAt
-	}
-	if c.IssuedAt.IsZero() {
+	explicit := c.ExpiresAt
+	jwtExpiresAt, hasJWTExpiry := jwtExpiry(c.Key)
+
+	switch {
+	case !explicit.IsZero() && hasJWTExpiry:
+		if jwtExpiresAt.Before(explicit) {
+			return jwtExpiresAt
+		}
+		return explicit
+	case !explicit.IsZero():
+		return explicit
+	case hasJWTExpiry:
+		return jwtExpiresAt
+	case c.AuthMethod == "" || c.AuthMethod == AuthMethodLiteLLMSSO:
+		if c.IssuedAt.IsZero() {
+			return time.Time{}
+		}
+		return c.IssuedAt.Add(credentialLifetime)
+	default:
 		return time.Time{}
 	}
-	return c.IssuedAt.Add(credentialLifetime)
 }
 
-// AuthorizationHeader returns c as a valid Bearer authorization header.
+// AuthorizationHeader returns c as a valid authorization header.
 func (c Credential) AuthorizationHeader() string {
 	if c.Key == "" || containsKeySpaceOrControl(c.Key) {
 		return ""
 	}
-	return "Bearer " + c.Key
+	tokenType := c.TokenType
+	if tokenType == "" {
+		tokenType = "Bearer"
+	}
+	if !validHTTPToken(tokenType) {
+		return ""
+	}
+	return tokenType + " " + c.Key
+}
+
+func validHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	const separators = "()<>@,;:\\\"/[]?={} \t"
+	return strings.IndexFunc(value, func(r rune) bool {
+		return r <= 31 || r >= 127 || strings.ContainsRune(separators, r)
+	}) == -1
 }
 
 func jwtExpiry(token string) (time.Time, bool) {

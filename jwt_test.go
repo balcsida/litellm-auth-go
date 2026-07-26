@@ -2,6 +2,7 @@ package litellmauth
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -99,21 +100,122 @@ func TestCredentialFreshHonorsExpiresAt(t *testing.T) {
 
 func TestCredentialAuthorizationHeaderValidatesKey(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		key  string
-		want string
+		name      string
+		key       string
+		tokenType string
+		want      string
 	}{
 		{name: "valid", key: "sk-key", want: "Bearer sk-key"},
+		{name: "custom token type", key: "sk-key", tokenType: "DPoP", want: "DPoP sk-key"},
+		{name: "token type with space", key: "sk-key", tokenType: "Bad Type"},
+		{name: "control in token type", key: "sk-key", tokenType: "Bad\nType"},
 		{name: "empty"},
 		{name: "ASCII space", key: "sk key"},
 		{name: "Unicode space", key: "sk\u00a0key"},
 		{name: "control", key: "sk\x00key"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := (Credential{Key: test.key}).AuthorizationHeader(); got != test.want {
+			if got := (Credential{Key: test.key, TokenType: test.tokenType}).AuthorizationHeader(); got != test.want {
 				t.Fatalf("AuthorizationHeader() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestCredentialFreshnessByAuthenticationMethod(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		credential Credential
+		fresh      bool
+	}{
+		{
+			name:       "legacy SSO fallback",
+			credential: Credential{Key: "sk-legacy", IssuedAt: now.Add(-time.Hour)},
+			fresh:      true,
+		},
+		{
+			name: "explicit SSO fallback",
+			credential: Credential{
+				Key: "sk-sso", AuthMethod: AuthMethodLiteLLMSSO,
+				IssuedAt: now.Add(-time.Hour),
+			},
+			fresh: true,
+		},
+		{
+			name: "non-expiring static",
+			credential: Credential{
+				Key: "sk-static", AuthMethod: AuthMethodStatic, NonExpiring: true,
+			},
+			fresh: true,
+		},
+		{
+			name: "generic unknown expiry",
+			credential: Credential{
+				Key: "sk-env", AuthMethod: AuthMethodEnvironment,
+			},
+			fresh: false,
+		},
+		{
+			name: "generic explicit expiry",
+			credential: Credential{
+				Key: "sk-file", AuthMethod: AuthMethodFile,
+				ExpiresAt: now.Add(time.Hour),
+			},
+			fresh: true,
+		},
+		{
+			name: "generic malformed authorization header",
+			credential: Credential{
+				Key: "sk bad", AuthMethod: AuthMethodEnvironment,
+				ExpiresAt: now.Add(time.Hour),
+			},
+			fresh: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.credential.Fresh(now); got != test.fresh {
+				t.Fatalf("Fresh() = %v, want %v", got, test.fresh)
+			}
+		})
+	}
+}
+
+func TestCredentialExpiryUsesEarliestKnownDeadline(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	jwtExpiryTime := now.Add(time.Hour)
+	credential := Credential{
+		Key:        jwtWithPayload(fmt.Sprintf(`{"exp":%d}`, jwtExpiryTime.Unix())),
+		AuthMethod: AuthMethodExec,
+		ExpiresAt:  now.Add(2 * time.Hour),
+	}
+	if got := credential.Expiry(); !got.Equal(jwtExpiryTime) {
+		t.Fatalf("Expiry() = %s, want %s", got, jwtExpiryTime)
+	}
+}
+
+func TestCredentialValidateRejectsAmbiguousLifetime(t *testing.T) {
+	if err := (Credential{
+		Key: "sk-env", AuthMethod: AuthMethodEnvironment,
+	}).Validate(); !errors.Is(err, ErrCredentialExpiryUnknown) {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	jwt := jwtWithPayload(`{"exp":4102444800}`)
+	if err := (Credential{
+		Key: jwt, AuthMethod: AuthMethodStatic, NonExpiring: true,
+	}).Validate(); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	if err := (Credential{
+		Key: "sk-key", AuthMethod: AuthMethodStatic, NonExpiring: true,
+		Scopes: []string{"bad\nscope"},
+	}).Validate(); !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("Validate() control-character error = %v", err)
 	}
 }
 

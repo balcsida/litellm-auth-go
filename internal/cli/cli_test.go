@@ -118,6 +118,87 @@ func TestLoginBaseURLPrecedence(t *testing.T) {
 	}
 }
 
+func TestCLIPrintsSafeHTTPErrorDetail(t *testing.T) {
+	store := new(fakeStore)
+	deps, stdout, stderr := testDependencies(store)
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return fakeClient{authenticate: func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
+			return litellmauth.Credential{}, &litellmauth.HTTPError{
+				Op:         "poll",
+				StatusCode: http.StatusBadRequest,
+				Detail:     "Invalid CLI login session; configure a shared cache for multiple replicas",
+			}
+		}}, nil
+	}
+
+	err := execute(context.Background(), []string{"login", "--no-browser"}, deps)
+	if err == nil {
+		t.Fatal("execute() error = nil")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if got := stderr.String(); !strings.Contains(got, "configure a shared cache") ||
+		strings.Contains(got, "litellm-auth failed") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestCLIRejectsUnrecognizedHTTPErrorDetail(t *testing.T) {
+	var output bytes.Buffer
+	printError(&output, &litellmauth.HTTPError{
+		Op:         "poll",
+		StatusCode: http.StatusBadRequest,
+		Detail:     "api_token_abc123",
+	})
+
+	if got, want := output.String(), "LiteLLM authentication failed: HTTP 400.\n"; got != want {
+		t.Fatalf("printError() = %q, want %q", got, want)
+	}
+}
+
+func TestCLIHTTPErrorPrecedence(t *testing.T) {
+	httpErr := &litellmauth.HTTPError{
+		Op:         "poll",
+		StatusCode: http.StatusBadRequest,
+		Detail:     "configure a shared cache",
+	}
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "protocol", err: errors.Join(httpErr, litellmauth.ErrProtocol), want: "LiteLLM authentication failed: configure a shared cache\n"},
+		{name: "unsupported proxy", err: errors.Join(httpErr, litellmauth.ErrUnsupportedProxy), want: litellmauth.ErrUnsupportedProxy.Error() + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			printError(&output, test.err)
+			if got := output.String(); got != test.want {
+				t.Fatalf("printError() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCLIPrintsSafeImportErrors(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{err: litellmauth.ErrCredentialExpiryUnknown, want: "Credential expiry is unknown; provide --expires-at, --ttl, or --non-expiring.\n"},
+		{err: litellmauth.ErrInvalidCredential, want: litellmauth.ErrInvalidCredential.Error() + "\n"},
+		{err: litellmauth.ErrSourceUnavailable, want: litellmauth.ErrSourceUnavailable.Error() + "\n"},
+		{err: litellmauth.ErrSourceOutput, want: litellmauth.ErrSourceOutput.Error() + "\n"},
+	} {
+		var output bytes.Buffer
+		printError(&output, test.err)
+		if got := output.String(); got != test.want {
+			t.Fatalf("printError(%v) = %q, want %q", test.err, got, test.want)
+		}
+	}
+}
+
 func TestLoginPassesGlobalOptions(t *testing.T) {
 	store := new(fakeStore)
 	deps, _, _ := testDependencies(store)
@@ -537,6 +618,81 @@ func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
 	metadata, ok := got["attribution_metadata"].(map[string]any)
 	if !ok || metadata["department"] != "Platform" || metadata["active"] != true || metadata["score"] != float64(1) {
 		t.Fatalf("JSON metadata = %#v", got["attribution_metadata"])
+	}
+}
+
+func TestWhoamiShowsAuthenticationMethodWithoutKey(t *testing.T) {
+	credential := successfulCredential()
+	credential.AuthMethod = litellmauth.AuthMethodEnvironment
+	credential.TokenType = "Bearer"
+	credential.NonExpiring = true
+	store := &fakeStore{credential: credential}
+	deps, stdout, stderr := testDependencies(store)
+
+	if err := execute(context.Background(), []string{"whoami"}, deps); err != nil {
+		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
+	}
+	if got := stdout.String(); !strings.Contains(got, "Method: env") ||
+		strings.Contains(got, credential.Key) {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestWhoamiJSONIncludesGenericMetadata(t *testing.T) {
+	credential := successfulCredential()
+	credential.AuthMethod = litellmauth.AuthMethodExec
+	credential.TokenType = "Bearer"
+	credential.Issuer = "https://issuer.example.com"
+	credential.Subject = "service-1"
+	credential.Scopes = []string{"litellm.invoke"}
+	credential.NonExpiring = true
+	store := &fakeStore{credential: credential}
+	deps, stdout, stderr := testDependencies(store)
+
+	if err := execute(context.Background(), []string{"whoami", "--json"}, deps); err != nil {
+		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["auth_method"] != "exec" ||
+		got["token_type"] != "Bearer" ||
+		got["issuer"] != credential.Issuer ||
+		got["subject"] != credential.Subject ||
+		got["non_expiring"] != true {
+		t.Fatalf("JSON = %#v", got)
+	}
+	if scopes, ok := got["scopes"].([]any); !ok || len(scopes) != 1 || scopes[0] != "litellm.invoke" {
+		t.Fatalf("JSON scopes = %#v", got["scopes"])
+	}
+	if _, exists := got["key"]; exists {
+		t.Fatalf("JSON exposed key: %#v", got)
+	}
+}
+
+func TestWhoamiRejectsCredentialKeyInGenericMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*litellmauth.Credential)
+	}{
+		{name: "auth method", apply: func(c *litellmauth.Credential) { c.AuthMethod = litellmauth.AuthMethod("method-" + c.Key) }},
+		{name: "token type", apply: func(c *litellmauth.Credential) { c.TokenType = "type-" + c.Key }},
+		{name: "issuer", apply: func(c *litellmauth.Credential) { c.Issuer = "issuer-" + c.Key }},
+		{name: "subject", apply: func(c *litellmauth.Credential) { c.Subject = "subject-" + c.Key }},
+		{name: "scope", apply: func(c *litellmauth.Credential) { c.Scopes = []string{"scope-" + c.Key} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credential := successfulCredential()
+			test.apply(&credential)
+			store := &fakeStore{credential: credential}
+			deps, stdout, stderr := testDependencies(store)
+
+			err := execute(context.Background(), []string{"whoami", "--json"}, deps)
+			if !errors.Is(err, litellmauth.ErrProtocol) || stdout.Len() != 0 || strings.Contains(stderr.String(), credential.Key) {
+				t.Fatalf("execute() error = %v; stdout = %q; stderr = %q", err, stdout, stderr)
+			}
+		})
 	}
 }
 
