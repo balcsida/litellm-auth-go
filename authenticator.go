@@ -63,6 +63,9 @@ func (a *Authenticator) Apply(ctx context.Context, request *http.Request) error 
 		if err := credential.Validate(); err != nil {
 			return err
 		}
+		if credential.BaseURL != "" && !sameOrigin(credential.BaseURL, request.URL) {
+			return ErrOriginMismatch
+		}
 		if !credential.Fresh(a.now()) {
 			return ErrCredentialStale
 		}

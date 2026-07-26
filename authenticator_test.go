@@ -107,6 +107,29 @@ func TestAuthenticatorDoesNotPartiallyMutateRequest(t *testing.T) {
 	}
 }
 
+func TestAuthenticatorRejectsCredentialForAnotherOrigin(t *testing.T) {
+	source, err := NewStaticSource("sk-key", SourceConfig{
+		BaseURL:     "https://proxy-a.example.com",
+		NonExpiring: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binder, _ := NewBearerHeader("Authorization")
+	authenticator, _ := NewAuthenticator(Binding{Source: source, Binder: binder})
+	request, _ := http.NewRequest(http.MethodGet, "https://proxy-b.example.com/v1/models", nil)
+	request.Header.Set("X-Existing", "keep")
+
+	err = authenticator.Apply(context.Background(), request)
+	if !errors.Is(err, ErrOriginMismatch) {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if request.Header.Get("Authorization") != "" ||
+		request.Header.Get("X-Existing") != "keep" {
+		t.Fatalf("request mutated on origin mismatch: %#v", request.Header)
+	}
+}
+
 func TestAuthenticatorDoesNotMutateRequestOnBinderFailure(t *testing.T) {
 	source, _ := NewStaticSource("sk-key", SourceConfig{NonExpiring: true})
 	firstBinder, _ := NewBearerHeader("Authorization")
