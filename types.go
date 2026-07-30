@@ -24,6 +24,7 @@ const (
 	AuthMethodFile        AuthMethod = "file"
 	AuthMethodExec        AuthMethod = "exec"
 	AuthMethodStdin       AuthMethod = "stdin"
+	AuthMethodOIDC        AuthMethod = "oidc"
 )
 
 // Client authenticates with one normalized LiteLLM proxy base URL.
@@ -36,6 +37,37 @@ type Client struct {
 	requestTimeout    time.Duration
 	now               func() time.Time
 	wait              func(context.Context, time.Duration) error
+}
+
+// OIDCRefresh contains the secret and public data needed to refresh an OIDC credential.
+type OIDCRefresh struct {
+	DiscoveryURL  string   `json:"discovery_url"`
+	TokenEndpoint string   `json:"token_endpoint"`
+	ClientID      string   `json:"client_id"`
+	RefreshToken  string   `json:"refresh_token"`
+	Scopes        []string `json:"scopes"`
+}
+
+func (OIDCRefresh) String() string     { return "OIDC refresh credential" }
+func (r OIDCRefresh) GoString() string { return r.String() }
+
+func (r OIDCRefresh) validate() error {
+	if len(r.DiscoveryURL) > maxCredentialKeyBytes || len(r.TokenEndpoint) > maxCredentialKeyBytes || len(r.ClientID) > maxCredentialKeyBytes || len(r.RefreshToken) > maxCredentialKeyBytes ||
+		!validNativeOIDCString(r.ClientID) || r.RefreshToken == "" || containsKeySpaceOrControl(r.RefreshToken) {
+		return ErrInvalidCredential
+	}
+	if _, err := normalizeOIDCURL(r.DiscoveryURL); err != nil {
+		return ErrInvalidCredential
+	}
+	if _, err := normalizeOIDCURL(r.TokenEndpoint); err != nil {
+		return ErrInvalidCredential
+	}
+	for _, scope := range r.Scopes {
+		if !validNativeOIDCString(scope) {
+			return ErrInvalidCredential
+		}
+	}
+	return nil
 }
 
 // Session is a short-lived browser login session. Its polling secret is never
@@ -110,6 +142,8 @@ type Credential struct {
 	Subject string `json:"subject,omitempty"`
 	// Scopes contains optional non-secret OAuth scopes.
 	Scopes []string `json:"scopes,omitempty"`
+	// OIDCRefresh is the refresh material for an OIDC credential. It is never output as metadata.
+	OIDCRefresh *OIDCRefresh `json:"oidc_refresh,omitempty"`
 	// NonExpiring explicitly marks a credential without a known expiry.
 	NonExpiring bool `json:"non_expiring,omitempty"`
 	// UserID is the authenticated user's proxy identifier.
@@ -138,6 +172,11 @@ func (c Credential) GoString() string { return c.String() }
 func (c Credential) Clone() Credential {
 	cloned := c
 	cloned.Scopes = append([]string(nil), c.Scopes...)
+	if c.OIDCRefresh != nil {
+		refresh := *c.OIDCRefresh
+		refresh.Scopes = append([]string(nil), c.OIDCRefresh.Scopes...)
+		cloned.OIDCRefresh = &refresh
+	}
 	cloned.Teams = append([]Team(nil), c.Teams...)
 	if c.AttributionMetadata != nil {
 		cloned.AttributionMetadata = make(map[string]any, len(c.AttributionMetadata))
@@ -170,6 +209,13 @@ func (c Credential) Validate() error {
 		if scope == "" || containsControl(scope) {
 			return ErrInvalidCredential
 		}
+	}
+	if c.OIDCRefresh != nil {
+		if c.AuthMethod != AuthMethodOIDC || c.OIDCRefresh.validate() != nil {
+			return ErrInvalidCredential
+		}
+	} else if c.AuthMethod == AuthMethodOIDC {
+		return ErrInvalidCredential
 	}
 	for key, value := range c.AttributionMetadata {
 		if key == "" || containsControl(key) {
@@ -214,6 +260,7 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		Issuer              string          `json:"issuer"`
 		Subject             string          `json:"subject"`
 		Scopes              []string        `json:"scopes"`
+		OIDCRefresh         *OIDCRefresh    `json:"oidc_refresh"`
 		NonExpiring         bool            `json:"non_expiring"`
 		UserID              string          `json:"user_id"`
 		TeamID              string          `json:"team_id"`
@@ -258,6 +305,7 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		Issuer:              decoded.Issuer,
 		Subject:             decoded.Subject,
 		Scopes:              append([]string(nil), decoded.Scopes...),
+		OIDCRefresh:         decoded.OIDCRefresh,
 		NonExpiring:         decoded.NonExpiring,
 		UserID:              decoded.UserID,
 		TeamID:              decoded.TeamID,

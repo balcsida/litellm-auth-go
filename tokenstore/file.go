@@ -37,45 +37,47 @@ type FileStore struct {
 }
 
 type diskCredential struct {
-	BaseURL             string                 `json:"base_url"`
-	Key                 string                 `json:"key"`
-	AuthMethod          litellmauth.AuthMethod `json:"auth_method,omitempty"`
-	TokenType           string                 `json:"token_type,omitempty"`
-	Issuer              string                 `json:"issuer,omitempty"`
-	Subject             string                 `json:"subject,omitempty"`
-	Scopes              []string               `json:"scopes,omitempty"`
-	ExpiresAt           string                 `json:"expires_at,omitempty"`
-	NonExpiring         bool                   `json:"non_expiring,omitempty"`
-	UserID              string                 `json:"user_id"`
-	Timestamp           json.RawMessage        `json:"timestamp"`
-	TeamID              string                 `json:"team_id"`
-	Teams               json.RawMessage        `json:"teams"`
-	TeamAlias           string                 `json:"team_alias"`
-	TeamDetails         json.RawMessage        `json:"team_details"`
-	AttributionMetadata json.RawMessage        `json:"attribution_metadata"`
+	BaseURL             string                   `json:"base_url"`
+	Key                 string                   `json:"key"`
+	AuthMethod          litellmauth.AuthMethod   `json:"auth_method,omitempty"`
+	TokenType           string                   `json:"token_type,omitempty"`
+	Issuer              string                   `json:"issuer,omitempty"`
+	Subject             string                   `json:"subject,omitempty"`
+	Scopes              []string                 `json:"scopes,omitempty"`
+	OIDCRefresh         *litellmauth.OIDCRefresh `json:"oidc_refresh,omitempty"`
+	ExpiresAt           string                   `json:"expires_at,omitempty"`
+	NonExpiring         bool                     `json:"non_expiring,omitempty"`
+	UserID              string                   `json:"user_id"`
+	Timestamp           json.RawMessage          `json:"timestamp"`
+	TeamID              string                   `json:"team_id"`
+	Teams               json.RawMessage          `json:"teams"`
+	TeamAlias           string                   `json:"team_alias"`
+	TeamDetails         json.RawMessage          `json:"team_details"`
+	AttributionMetadata json.RawMessage          `json:"attribution_metadata"`
 }
 
 type savedCredential struct {
-	BaseURL             string                 `json:"base_url"`
-	Key                 string                 `json:"key"`
-	AuthMethod          litellmauth.AuthMethod `json:"auth_method,omitempty"`
-	TokenType           string                 `json:"token_type,omitempty"`
-	Issuer              string                 `json:"issuer,omitempty"`
-	Subject             string                 `json:"subject,omitempty"`
-	Scopes              []string               `json:"scopes,omitempty"`
-	ExpiresAt           string                 `json:"expires_at,omitempty"`
-	NonExpiring         bool                   `json:"non_expiring,omitempty"`
-	UserID              string                 `json:"user_id"`
-	UserEmail           string                 `json:"user_email"`
-	UserRole            string                 `json:"user_role"`
-	AuthHeaderName      string                 `json:"auth_header_name"`
-	JWTToken            string                 `json:"jwt_token"`
-	Timestamp           json.Number            `json:"timestamp"`
-	TeamID              string                 `json:"team_id"`
-	Teams               []string               `json:"teams"`
-	TeamAlias           string                 `json:"team_alias,omitempty"`
-	TeamDetails         []teamDetail           `json:"team_details,omitempty"`
-	AttributionMetadata map[string]any         `json:"attribution_metadata"`
+	BaseURL             string                   `json:"base_url"`
+	Key                 string                   `json:"key"`
+	AuthMethod          litellmauth.AuthMethod   `json:"auth_method,omitempty"`
+	TokenType           string                   `json:"token_type,omitempty"`
+	Issuer              string                   `json:"issuer,omitempty"`
+	Subject             string                   `json:"subject,omitempty"`
+	Scopes              []string                 `json:"scopes,omitempty"`
+	OIDCRefresh         *litellmauth.OIDCRefresh `json:"oidc_refresh,omitempty"`
+	ExpiresAt           string                   `json:"expires_at,omitempty"`
+	NonExpiring         bool                     `json:"non_expiring,omitempty"`
+	UserID              string                   `json:"user_id"`
+	UserEmail           string                   `json:"user_email"`
+	UserRole            string                   `json:"user_role"`
+	AuthHeaderName      string                   `json:"auth_header_name"`
+	JWTToken            string                   `json:"jwt_token"`
+	Timestamp           json.Number              `json:"timestamp"`
+	TeamID              string                   `json:"team_id"`
+	Teams               []string                 `json:"teams"`
+	TeamAlias           string                   `json:"team_alias,omitempty"`
+	TeamDetails         []teamDetail             `json:"team_details,omitempty"`
+	AttributionMetadata map[string]any           `json:"attribution_metadata"`
 }
 
 type teamDetail struct {
@@ -238,6 +240,7 @@ func (d diskCredential) credential() (litellmauth.Credential, error) {
 		Issuer:      d.Issuer,
 		Subject:     d.Subject,
 		Scopes:      append([]string(nil), d.Scopes...),
+		OIDCRefresh: d.OIDCRefresh,
 		NonExpiring: d.NonExpiring,
 	}
 	if credential.AuthorizationHeader() == "" {
@@ -309,6 +312,7 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 		Issuer:              credential.Issuer,
 		Subject:             credential.Subject,
 		Scopes:              append([]string(nil), credential.Scopes...),
+		OIDCRefresh:         credential.OIDCRefresh,
 		NonExpiring:         credential.NonExpiring,
 		UserID:              credential.UserID,
 		UserEmail:           "unknown",

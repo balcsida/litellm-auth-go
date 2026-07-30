@@ -126,6 +126,30 @@ func TestFileStoreRoundTripsGenericCredentialMetadata(t *testing.T) {
 	}
 }
 
+func TestFileStoreRoundTripsOIDCRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token.json")
+	store, _ := NewFileStore(path)
+	refresh := litellmauth.OIDCRefresh{DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration", TokenEndpoint: "https://idp.example.com/token", ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
+	credential := litellmauth.Credential{BaseURL: "https://proxy.example.com", Key: "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature", AuthMethod: litellmauth.AuthMethodOIDC, TokenType: "Bearer", OIDCRefresh: &refresh}
+	if err := store.Save(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"oidc_refresh"`) || strings.Contains(string(raw), `"attribution_metadata":{"refresh`) {
+		t.Fatalf("stored JSON = %s", raw)
+	}
+	loaded, err := store.Load(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.OIDCRefresh == nil || loaded.OIDCRefresh.RefreshToken != refresh.RefreshToken || loaded.OIDCRefresh.Scopes[0] != "openid" {
+		t.Fatalf("loaded = %#v", loaded)
+	}
+}
+
 func TestFileStoreRoundTripsExplicitExpiry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token.json")
 	store, _ := NewFileStore(path)
