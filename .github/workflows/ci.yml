@@ -154,6 +154,14 @@ jobs:
                 --header "Content-Type: application/json" \
                 --data '{"user_id":"smoke-user","user_email":"smoke@example.com","user_role":"internal_user"}' \
                 http://127.0.0.1:4000/user/new >/dev/null
+              if [ -n "${LITELLM_LICENSE:-}" ]; then
+                curl --fail --silent --show-error \
+                  --request POST \
+                  --header "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                  --header "Content-Type: application/json" \
+                  --data '{"user_id":"native-oidc-smoke-user","user_email":"native-oidc-smoke@example.com","user_role":"internal_user"}' \
+                  http://127.0.0.1:4000/user/new >/dev/null
+              fi
               exit 0
             fi
             sleep 2
