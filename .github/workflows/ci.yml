@@ -126,7 +126,8 @@ jobs:
           LITELLM_SALT_KEY: smoke-salt-key-with-at-least-32-bytes
           PROXY_BASE_URL: http://127.0.0.1:4000
         run: |
-          cat > "$RUNNER_TEMP/litellm-jwt.yaml" <<'EOF'
+          if [ -n "${LITELLM_LICENSE:-}" ]; then
+            cat > "$RUNNER_TEMP/litellm.yaml" <<'EOF'
           general_settings:
             enable_jwt_auth: true
             litellm_jwtauth:
@@ -138,7 +139,12 @@ jobs:
                   jwks_url: http://127.0.0.1:19090/jwks
                   disable_audience_validation: true
           EOF
-          litellm --config "$RUNNER_TEMP/litellm-jwt.yaml" --host 127.0.0.1 --port 4000 > "$RUNNER_TEMP/litellm.log" 2>&1 &
+          else
+            cat > "$RUNNER_TEMP/litellm.yaml" <<'EOF'
+          {}
+          EOF
+          fi
+          litellm --config "$RUNNER_TEMP/litellm.yaml" --host 127.0.0.1 --port 4000 > "$RUNNER_TEMP/litellm.log" 2>&1 &
           for _ in {1..60}; do
             if curl --fail --silent http://127.0.0.1:4000/health/readiness >/dev/null; then
               curl --fail --silent --show-error \
