@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -28,7 +29,17 @@ const defaultBaseURL = "http://localhost:4000"
 
 type authClient interface {
 	Authenticate(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	Discover(context.Context) (*litellmauth.NativeOIDCConfig, error)
+	DiscoverProvider(context.Context, litellmauth.NativeOIDCConfig) (litellmauth.OIDCProvider, error)
+	AuthenticateBrowser(context.Context, litellmauth.NativeOIDCConfig, litellmauth.OIDCProvider, litellmauth.BrowserLoginOptions) (litellmauth.Credential, error)
+	AuthenticateDevice(context.Context, litellmauth.NativeOIDCConfig, litellmauth.OIDCProvider, litellmauth.DeviceLoginOptions) (litellmauth.Credential, error)
+	Refresh(context.Context, litellmauth.Credential) (litellmauth.Credential, error)
 }
+
+type browserListenerError struct{ cause error }
+
+func (e *browserListenerError) Error() string { return "native OIDC browser listener unavailable" }
+func (e *browserListenerError) Unwrap() error { return e.cause }
 
 type credentialStore interface {
 	Load(context.Context, *url.URL) (litellmauth.Credential, error)
@@ -43,6 +54,7 @@ type dependencies struct {
 	getenv      func(string) string
 	isTerminal  func() bool
 	openBrowser func(string) error
+	listen      func(network, address string) (net.Listener, error)
 	now         func() time.Time
 	newClient   func(string, time.Duration, bool) (authClient, error)
 	newStore    func(string) (credentialStore, error)
@@ -82,6 +94,7 @@ func defaultDependencies(stdin io.Reader, stdout, stderr io.Writer) dependencies
 			return ok && term.IsTerminal(int(file.Fd()))
 		},
 		openBrowser: browser.OpenURL,
+		listen:      net.Listen,
 		now:         time.Now,
 		newClient: func(raw string, timeout time.Duration, allowInsecureHTTP bool) (authClient, error) {
 			options := []litellmauth.Option{litellmauth.WithMaxWait(timeout)}
@@ -122,6 +135,7 @@ func newRoot(deps dependencies) *cobra.Command {
 }
 
 func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
+	var flow string
 	var noBrowser bool
 	var team string
 	command := &cobra.Command{
@@ -163,7 +177,7 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			if global.verbose {
 				options.OnEvent = func(event litellmauth.Event) { printEvent(deps.stderr, event) }
 			}
-			credential, err := client.Authenticate(ctx, options)
+			credential, err := loginCredential(ctx, client, rawBase, flow, noBrowser, team, options, deps)
 			if err != nil {
 				return err
 			}
@@ -178,9 +192,95 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			return err
 		},
 	}
+	command.Flags().StringVar(&flow, "flow", "auto", "authentication flow: auto, browser, device, or litellm-sso")
 	command.Flags().BoolVar(&noBrowser, "no-browser", false, "do not open a browser")
 	command.Flags().StringVar(&team, "team", "", "LiteLLM team ID")
 	return command
+}
+
+func loginCredential(ctx context.Context, client authClient, rawBase, flow string, noBrowser bool, team string, options litellmauth.AuthenticateOptions, deps dependencies) (litellmauth.Credential, error) {
+	if flow == "litellm-sso" {
+		return client.Authenticate(ctx, options)
+	}
+	if flow != "auto" && flow != "browser" && flow != "device" {
+		return litellmauth.Credential{}, errors.New("invalid login flow")
+	}
+	config, err := client.Discover(ctx)
+	if err != nil {
+		return litellmauth.Credential{}, err
+	}
+	if config == nil {
+		if flow == "auto" {
+			return client.Authenticate(ctx, options)
+		}
+		return litellmauth.Credential{}, errors.New("native OIDC metadata is unavailable")
+	}
+	if team != "" {
+		return litellmauth.Credential{}, errors.New("--team is not supported with native OIDC")
+	}
+	if flow == "browser" && noBrowser {
+		return litellmauth.Credential{}, errors.New("--no-browser cannot be used with browser flow")
+	}
+	provider, err := client.DiscoverProvider(ctx, *config)
+	if err != nil {
+		return litellmauth.Credential{}, err
+	}
+	browser := func() (litellmauth.Credential, error) {
+		return client.AuthenticateBrowser(ctx, *config, provider, litellmauth.BrowserLoginOptions{
+			OpenURL: func(_ context.Context, authorization *url.URL) error { return deps.openBrowser(authorization.String()) },
+			Listen: func(network, address string) (net.Listener, error) {
+				listener, err := deps.listen(network, address)
+				if err != nil {
+					return nil, &browserListenerError{cause: err}
+				}
+				return listener, nil
+			},
+		})
+	}
+	device := func() (litellmauth.Credential, error) {
+		if provider.DeviceAuthorizationEndpoint == "" {
+			return litellmauth.Credential{}, errors.New("native OIDC device authorization is unavailable")
+		}
+		return client.AuthenticateDevice(ctx, *config, provider, litellmauth.DeviceLoginOptions{OnAuthorization: func(_ context.Context, authorization litellmauth.DeviceAuthorization) error {
+			verification := authorization.VerificationURIComplete
+			if verification == "" {
+				verification = authorization.VerificationURI
+			}
+			fmt.Fprintf(deps.stdout, "Verification URL: %s\nUser code: %s\n", safe(verification), safe(authorization.UserCode))
+			if !noBrowser {
+				if err := deps.openBrowser(verification); err != nil {
+					fmt.Fprintln(deps.stderr, "Browser could not be opened; continue manually with the URL above.")
+				}
+			}
+			return nil
+		}})
+	}
+	var credential litellmauth.Credential
+	switch flow {
+	case "browser":
+		credential, err = browser()
+	case "device":
+		credential, err = device()
+	default:
+		if noBrowser {
+			credential, err = device()
+		} else {
+			credential, err = browser()
+			var listenerErr *browserListenerError
+			if err != nil && errors.As(err, &listenerErr) {
+				credential, err = device()
+			}
+		}
+	}
+	if err != nil {
+		return litellmauth.Credential{}, err
+	}
+	base, err := baseurl.Normalize(rawBase)
+	if err != nil {
+		return litellmauth.Credential{}, err
+	}
+	credential.BaseURL, credential.Issuer = base.String(), provider.Issuer
+	return credential, nil
 }
 
 func newLogoutCommand(global *globalOptions, deps dependencies) *cobra.Command {
@@ -250,7 +350,24 @@ func newPrintTokenCommand(global *globalOptions, deps dependencies) *cobra.Comma
 				return err
 			}
 			if !credential.Fresh(deps.now()) {
-				return litellmauth.ErrCredentialStale
+				if credential.AuthMethod != litellmauth.AuthMethodOIDC || credential.OIDCRefresh == nil {
+					return litellmauth.ErrCredentialStale
+				}
+				rawBase := credential.BaseURL
+				if issuer != nil {
+					rawBase = issuer.String()
+				}
+				client, err := deps.newClient(rawBase, global.timeout, global.allowInsecureHTTP)
+				if err != nil {
+					return err
+				}
+				credential, err = client.Refresh(command.Context(), credential)
+				if err != nil {
+					return err
+				}
+				if err := store.Save(command.Context(), credential); err != nil {
+					return err
+				}
 			}
 			if credential.AuthorizationHeader() == "" {
 				return litellmauth.ErrProtocol

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,10 +24,50 @@ var testNow = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 
 type fakeClient struct {
 	authenticate func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	discover     func(context.Context) (*litellmauth.NativeOIDCConfig, error)
+	provider     func(context.Context, litellmauth.NativeOIDCConfig) (litellmauth.OIDCProvider, error)
+	browser      func(context.Context, litellmauth.NativeOIDCConfig, litellmauth.OIDCProvider, litellmauth.BrowserLoginOptions) (litellmauth.Credential, error)
+	device       func(context.Context, litellmauth.NativeOIDCConfig, litellmauth.OIDCProvider, litellmauth.DeviceLoginOptions) (litellmauth.Credential, error)
+	refresh      func(context.Context, litellmauth.Credential) (litellmauth.Credential, error)
 }
 
 func (c fakeClient) Authenticate(ctx context.Context, options litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
 	return c.authenticate(ctx, options)
+}
+
+func (c fakeClient) Discover(ctx context.Context) (*litellmauth.NativeOIDCConfig, error) {
+	if c.discover == nil {
+		return nil, nil
+	}
+	return c.discover(ctx)
+}
+
+func (c fakeClient) DiscoverProvider(ctx context.Context, config litellmauth.NativeOIDCConfig) (litellmauth.OIDCProvider, error) {
+	if c.provider == nil {
+		return litellmauth.OIDCProvider{}, errors.New("unexpected provider discovery")
+	}
+	return c.provider(ctx, config)
+}
+
+func (c fakeClient) AuthenticateBrowser(ctx context.Context, config litellmauth.NativeOIDCConfig, provider litellmauth.OIDCProvider, options litellmauth.BrowserLoginOptions) (litellmauth.Credential, error) {
+	if c.browser == nil {
+		return litellmauth.Credential{}, errors.New("unexpected browser authentication")
+	}
+	return c.browser(ctx, config, provider, options)
+}
+
+func (c fakeClient) AuthenticateDevice(ctx context.Context, config litellmauth.NativeOIDCConfig, provider litellmauth.OIDCProvider, options litellmauth.DeviceLoginOptions) (litellmauth.Credential, error) {
+	if c.device == nil {
+		return litellmauth.Credential{}, errors.New("unexpected device authentication")
+	}
+	return c.device(ctx, config, provider, options)
+}
+
+func (c fakeClient) Refresh(ctx context.Context, credential litellmauth.Credential) (litellmauth.Credential, error) {
+	if c.refresh == nil {
+		return litellmauth.Credential{}, errors.New("unexpected OIDC refresh")
+	}
+	return c.refresh(ctx, credential)
 }
 
 type fakeStore struct {
@@ -65,7 +106,8 @@ func testDependencies(store *fakeStore) (dependencies, *bytes.Buffer, *bytes.Buf
 		openBrowser: func(string) error {
 			return nil
 		},
-		now: func() time.Time { return testNow },
+		listen: net.Listen,
+		now:    func() time.Time { return testNow },
 		newClient: func(string, time.Duration, bool) (authClient, error) {
 			return fakeClient{authenticate: func(_ context.Context, options litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
 				return litellmauth.Credential{
@@ -74,7 +116,7 @@ func testDependencies(store *fakeStore) (dependencies, *bytes.Buffer, *bytes.Buf
 					UserID:   "user-1",
 					IssuedAt: testNow,
 				}, nil
-			}}, nil
+			}, discover: func(context.Context) (*litellmauth.NativeOIDCConfig, error) { return nil, nil }}, nil
 		},
 		newStore: func(string) (credentialStore, error) { return store, nil },
 	}, stdout, stderr
@@ -324,8 +366,7 @@ func TestLoginTeamSelectionWithRealClient(t *testing.T) {
 					litellmauth.WithPollInterval(time.Millisecond),
 				)
 			}
-
-			args := append([]string{"--base-url", server.URL, "login", "--no-browser"}, test.args...)
+			args := append([]string{"--base-url", server.URL, "login", "--flow", "litellm-sso", "--no-browser"}, test.args...)
 			err := execute(context.Background(), args, deps)
 			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("execute() error = %v, want %v", err, test.wantErr)
@@ -881,6 +922,120 @@ func TestPrintTokenPerformsNoNetworkRequest(t *testing.T) {
 	}
 }
 
+func TestLoginSelectsNativeOIDCFlows(t *testing.T) {
+	config := litellmauth.NativeOIDCConfig{DiscoveryURL: "https://idp.example.com/config", ClientID: "cli", Scopes: []string{"openid"}}
+	provider := litellmauth.OIDCProvider{Issuer: "https://idp.example.com", AuthorizationEndpoint: "https://idp.example.com/authorize", TokenEndpoint: "https://idp.example.com/token", DeviceAuthorizationEndpoint: "https://idp.example.com/device"}
+	for _, test := range []struct {
+		name       string
+		args       []string
+		metadata   *litellmauth.NativeOIDCConfig
+		provider   litellmauth.OIDCProvider
+		browserErr error
+		deviceErr  error
+		want       string
+		wantErr    bool
+	}{
+		{name: "auto browser first", metadata: &config, provider: provider, want: "browser"},
+		{name: "auto listener fallback", metadata: &config, provider: provider, browserErr: errors.New("listener unavailable"), want: "browser,device"},
+		{name: "browser error does not fall back", metadata: &config, provider: provider, deviceErr: errors.New("device must not run"), want: "browser", wantErr: true},
+		{name: "device", args: []string{"--flow", "device"}, metadata: &config, provider: provider, want: "device"},
+		{name: "browser", args: []string{"--flow", "browser"}, metadata: &config, provider: provider, want: "browser"},
+		{name: "litellm SSO", args: []string{"--flow", "litellm-sso"}, metadata: &config, provider: provider, want: "sso"},
+		{name: "absent metadata uses SSO", metadata: nil, want: "sso"},
+		{name: "no browser uses device", args: []string{"--no-browser"}, metadata: &config, provider: provider, want: "device"},
+		{name: "no browser conflicts with browser", args: []string{"--flow", "browser", "--no-browser"}, metadata: &config, provider: provider, wantErr: true},
+		{name: "native team rejected", args: []string{"--team", "team-1"}, metadata: &config, provider: provider, wantErr: true},
+		{name: "device endpoint required", args: []string{"--flow", "device"}, metadata: &config, provider: litellmauth.OIDCProvider{Issuer: provider.Issuer, AuthorizationEndpoint: provider.AuthorizationEndpoint, TokenEndpoint: provider.TokenEndpoint}, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := new(fakeStore)
+			deps, _, _ := testDependencies(store)
+			var calls []string
+			deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+				return fakeClient{
+					authenticate: func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
+						calls = append(calls, "sso")
+						return successfulCredential(), nil
+					},
+					discover: func(context.Context) (*litellmauth.NativeOIDCConfig, error) { return test.metadata, nil },
+					provider: func(context.Context, litellmauth.NativeOIDCConfig) (litellmauth.OIDCProvider, error) {
+						return test.provider, nil
+					},
+					browser: func(_ context.Context, _ litellmauth.NativeOIDCConfig, _ litellmauth.OIDCProvider, options litellmauth.BrowserLoginOptions) (litellmauth.Credential, error) {
+						calls = append(calls, "browser")
+						if test.browserErr != nil {
+							_, err := options.Listen("tcp", "127.0.0.1:0")
+							return litellmauth.Credential{}, err
+						}
+						if test.deviceErr != nil {
+							return litellmauth.Credential{}, errors.New("browser started")
+						}
+						return successfulCredential(), nil
+					},
+					device: func(context.Context, litellmauth.NativeOIDCConfig, litellmauth.OIDCProvider, litellmauth.DeviceLoginOptions) (litellmauth.Credential, error) {
+						calls = append(calls, "device")
+						if test.deviceErr != nil {
+							return litellmauth.Credential{}, test.deviceErr
+						}
+						return successfulCredential(), nil
+					},
+				}, nil
+			}
+			if test.browserErr != nil {
+				deps.listen = func(string, string) (net.Listener, error) { return nil, test.browserErr }
+			}
+
+			err := execute(context.Background(), append([]string{"login"}, test.args...), deps)
+			if (err != nil) != test.wantErr || test.want != "" && strings.Join(calls, ",") != test.want {
+				t.Fatalf("execute() error = %v, calls = %q", err, strings.Join(calls, ","))
+			}
+		})
+	}
+}
+
+func TestPrintTokenRefreshesOnlyStaleOIDCCredentials(t *testing.T) {
+	stale := successfulCredential()
+	stale.AuthMethod = litellmauth.AuthMethodOIDC
+	stale.ExpiresAt = testNow.Add(-time.Hour)
+	stale.OIDCRefresh = &litellmauth.OIDCRefresh{DiscoveryURL: "https://idp.example.com/config", TokenEndpoint: "https://idp.example.com/token", ClientID: "cli", RefreshToken: "refresh", Scopes: []string{"openid"}}
+	store := &fakeStore{credential: stale}
+	deps, stdout, _ := testDependencies(store)
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return fakeClient{refresh: func(_ context.Context, credential litellmauth.Credential) (litellmauth.Credential, error) {
+			credential.Key, credential.ExpiresAt = "fresh-key", testNow.Add(time.Hour)
+			return credential, nil
+		}}, nil
+	}
+
+	if err := execute(context.Background(), []string{"print-token"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	if got := stdout.String(); got != "fresh-key\n" || store.saved == nil || store.saved.Key != "fresh-key" {
+		t.Fatalf("stdout = %q, saved = %#v", got, store.saved)
+	}
+}
+
+func TestPrintTokenRefreshFailureLeavesStoreAndStdoutUntouched(t *testing.T) {
+	stale := successfulCredential()
+	stale.AuthMethod = litellmauth.AuthMethodOIDC
+	stale.ExpiresAt = testNow.Add(-time.Hour)
+	stale.OIDCRefresh = &litellmauth.OIDCRefresh{DiscoveryURL: "https://idp.example.com/config", TokenEndpoint: "https://idp.example.com/token", ClientID: "cli", RefreshToken: "refresh", Scopes: []string{"openid"}}
+	store := &fakeStore{credential: stale}
+	deps, stdout, _ := testDependencies(store)
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return fakeClient{refresh: func(context.Context, litellmauth.Credential) (litellmauth.Credential, error) {
+			return litellmauth.Credential{}, errors.New("refresh failed")
+		}}, nil
+	}
+
+	if err := execute(context.Background(), []string{"print-token"}, deps); err == nil {
+		t.Fatal("execute() error = nil")
+	}
+	if stdout.Len() != 0 || store.saved != nil || store.credential.Key != "secret-key" {
+		t.Fatalf("stdout = %q, saved = %#v, stored = %#v", stdout, store.saved, store.credential)
+	}
+}
+
 func TestGlobalAndLoginFlags(t *testing.T) {
 	store := new(fakeStore)
 	deps, stdout, _ := testDependencies(store)
@@ -894,7 +1049,7 @@ func TestGlobalAndLoginFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"no-browser", "team"} {
+	for _, name := range []string{"flow", "no-browser", "team"} {
 		if login.Flags().Lookup(name) == nil {
 			t.Errorf("missing login flag --%s", name)
 		}
@@ -904,6 +1059,12 @@ func TestGlobalAndLoginFlags(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "completion") {
 		t.Fatalf("help advertises unrequested completion command: %q", stdout)
+	}
+	if err := execute(context.Background(), []string{"login", "--help"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	if help := stdout.String(); !strings.Contains(help, "--flow") || !strings.Contains(help, "litellm-sso") {
+		t.Fatalf("login help = %q", help)
 	}
 }
 
