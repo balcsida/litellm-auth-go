@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"sync"
 	"time"
 )
 
@@ -20,7 +19,7 @@ type OIDCSource struct {
 	store   OIDCCredentialStore
 	baseURL *url.URL
 	now     func() time.Time
-	mu      sync.Mutex
+	refresh chan struct{}
 }
 
 // NewOIDCSource creates a source backed by a refreshable OIDC credential store.
@@ -35,12 +34,14 @@ func NewOIDCSource(client *Client, store OIDCCredentialStore) (*OIDCSource, erro
 	if err != nil {
 		return nil, errors.New("OIDC source client URL is invalid")
 	}
-	return &OIDCSource{client: client, store: store, baseURL: baseURL, now: time.Now}, nil
+	source := &OIDCSource{client: client, store: store, baseURL: baseURL, now: time.Now, refresh: make(chan struct{}, 1)}
+	source.refresh <- struct{}{}
+	return source, nil
 }
 
 // Credential returns the stored credential or refreshes it once for concurrent callers.
 func (s *OIDCSource) Credential(ctx context.Context) (Credential, error) {
-	if s == nil || s.client == nil || s.store == nil || s.baseURL == nil || s.now == nil {
+	if s == nil || s.client == nil || s.store == nil || s.baseURL == nil || s.now == nil || s.refresh == nil {
 		return Credential{}, ErrSourceUnavailable
 	}
 	if err := ctx.Err(); err != nil {
@@ -54,11 +55,12 @@ func (s *OIDCSource) Credential(ctx context.Context) (Credential, error) {
 		return credential.Clone(), nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return Credential{}, oidcLoginRequired(err)
+	select {
+	case <-ctx.Done():
+		return Credential{}, oidcLoginRequired(ctx.Err())
+	case <-s.refresh:
 	}
+	defer func() { s.refresh <- struct{}{} }()
 	credential, err = s.store.Load(ctx, s.baseURL)
 	if err != nil {
 		return Credential{}, oidcLoginRequired(err)

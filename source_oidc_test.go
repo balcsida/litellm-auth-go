@@ -181,25 +181,53 @@ func TestOIDCSourceInitialLoadCancellationRequiresLogin(t *testing.T) {
 	assertSafeOIDCLoginError(t, <-errs, context.Canceled, "refresh-token")
 }
 
-func TestOIDCSourcePostLockLoadCancellationRequiresLogin(t *testing.T) {
+func TestOIDCSourceWaitingForRefreshHonorsCancellation(t *testing.T) {
 	now := time.Now()
-	client, _ := New("https://proxy.example.com")
 	started := make(chan struct{})
-	store := &oidcSourceStore{credential: oidcSourceCredential(now.Add(-time.Hour), ptr(validOIDCRefresh("https://idp.example.com/token"))), blockLoad: 2, loadStarted: started}
+	release := make(chan struct{})
+	loads := make(chan int, 3)
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"`+oidcJWT(time.Now().Add(time.Hour))+`","token_type":"Bearer"}`)
+	}))
+	defer server.Close()
+	store := &oidcSourceStore{credential: oidcSourceCredential(now.Add(-time.Hour), ptr(validOIDCRefresh(server.URL))), loads: loads}
+	client, _ := New(server.URL, WithHTTPClient(server.Client()))
 	source, err := NewOIDCSource(client, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	source.now = func() time.Time { return now }
+
+	firstDone := make(chan error, 1)
+	go func() { _, err := source.Credential(context.Background()); firstDone <- err }()
+	<-started
+	for call := 0; call < 2; {
+		call = <-loads
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	source.mu.Lock()
 	errs := make(chan error, 1)
 	go func() { _, err := source.Credential(ctx); errs <- err }()
-	source.mu.Unlock()
-	<-started
+	if call := <-loads; call != 3 {
+		t.Fatalf("load call = %d, want 3", call)
+	}
 	cancel()
-	assertSafeOIDCLoginError(t, <-errs, context.Canceled, "refresh-token")
+
+	select {
+	case err := <-errs:
+		assertSafeOIDCLoginError(t, err, context.Canceled, "refresh-token")
+		close(release)
+		if err := <-firstDone; err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		<-firstDone
+		<-errs
+		t.Fatal("canceled caller remained blocked behind refresh")
+	}
 }
 
 func TestOIDCSourceHidesLoadErrorSecrets(t *testing.T) {
@@ -286,6 +314,7 @@ type oidcSourceStore struct {
 	baseURLs    []string
 	blockLoad   int
 	loadStarted chan struct{}
+	loads       chan int
 	saveErr     error
 }
 
@@ -302,8 +331,13 @@ func (s *oidcSourceStore) Load(ctx context.Context, baseURL *url.URL) (Credentia
 	}
 	credential, err := s.credential.Clone(), s.loadErr
 	block := s.blockLoad == s.loadCalls
+	call := s.loadCalls
 	started := s.loadStarted
+	loads := s.loads
 	s.mu.Unlock()
+	if loads != nil {
+		loads <- call
+	}
 	if block {
 		close(started)
 		<-ctx.Done()
