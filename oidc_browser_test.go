@@ -117,6 +117,53 @@ func TestAuthenticateBrowserIgnoresProviderErrorWithWrongState(t *testing.T) {
 	}
 }
 
+func TestBrowserCallbackHandlerRepeatedCallbacksDoNotBlockShutdown(t *testing.T) {
+	callbacks := make(chan browserCallback, 1)
+	handler := browserCallbackHandler(callbacks, "expected-state")
+	entered := make(chan struct{}, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		handler.ServeHTTP(w, r)
+	}))
+
+	response, err := http.Get(server.URL + "/callback?code=first&state=expected-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	<-entered
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get(server.URL + "/callback?code=second&state=expected-state")
+		if err == nil {
+			response.Body.Close()
+		}
+		requestDone <- err
+	}()
+	<-entered
+	closeDone := make(chan struct{})
+	go func() {
+		server.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		<-callbacks
+		<-closeDone
+		t.Fatal("repeated callback blocked server shutdown")
+	}
+	if err := <-requestDone; err != nil {
+		t.Fatal(err)
+	}
+	result := <-callbacks
+	if result.code != "first" || result.err != nil {
+		t.Fatalf("callback result = %#v", result)
+	}
+}
+
 func TestAuthenticateBrowserIgnoresCodeOrMissingCodeWithWrongState(t *testing.T) {
 	for _, test := range []struct {
 		name  string

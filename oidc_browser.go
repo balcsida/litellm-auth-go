@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 const browserCallbackPath = "/callback"
@@ -98,6 +99,15 @@ func (c *Client) AuthenticateBrowser(ctx context.Context, config NativeOIDCConfi
 }
 
 func browserCallbackHandler(callback chan<- browserCallback, state string) http.Handler {
+	var terminal sync.Once
+	deliver := func(result browserCallback) {
+		terminal.Do(func() {
+			select {
+			case callback <- result:
+			default:
+			}
+		})
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != browserCallbackPath {
 			http.NotFound(w, r)
@@ -114,16 +124,16 @@ func browserCallbackHandler(callback chan<- browserCallback, state string) http.
 			return
 		}
 		if query.Get("error") != "" {
-			callback <- browserCallback{err: browserCallbackProtocolError()}
+			deliver(browserCallback{err: browserCallbackProtocolError()})
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		if query.Get("code") == "" {
-			callback <- browserCallback{err: browserCallbackProtocolError()}
+			deliver(browserCallback{err: browserCallbackProtocolError()})
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		callback <- browserCallback{code: query.Get("code")}
+		deliver(browserCallback{code: query.Get("code")})
 		w.WriteHeader(http.StatusOK)
 	})
 }
