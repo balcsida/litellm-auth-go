@@ -74,6 +74,7 @@ jobs:
 
   smoke:
     name: LiteLLM full login smoke
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -121,9 +122,14 @@ jobs:
           GENERIC_TOKEN_ENDPOINT: http://127.0.0.1:8080/default/token
           GENERIC_USERINFO_ENDPOINT: http://127.0.0.1:8080/default/userinfo
           LITELLM_MASTER_KEY: sk-smoke-master-key
+          LITELLM_LICENSE: ${{ secrets.LITELLM_LICENSE }}
           LITELLM_SALT_KEY: smoke-salt-key-with-at-least-32-bytes
           PROXY_BASE_URL: http://127.0.0.1:4000
         run: |
+          if [ -z "${LITELLM_LICENSE:-}" ]; then
+            echo "LITELLM_LICENSE must be configured for LiteLLM smoke."
+            exit 1
+          fi
           cat > "$RUNNER_TEMP/litellm-jwt.yaml" <<'EOF'
           general_settings:
             enable_jwt_auth: true
