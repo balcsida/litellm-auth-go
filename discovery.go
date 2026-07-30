@@ -81,12 +81,7 @@ func (c *Client) DiscoverProvider(ctx context.Context, config NativeOIDCConfig) 
 	if err := c.discoverJSON(ctx, config.DiscoveryURL, "provider discovery", &document, true); err != nil {
 		return OIDCProvider{}, err
 	}
-	provider := OIDCProvider{
-		Issuer:                      document.Issuer,
-		AuthorizationEndpoint:       document.AuthorizationEndpoint,
-		TokenEndpoint:               document.TokenEndpoint,
-		DeviceAuthorizationEndpoint: document.DeviceAuthorizationEndpoint,
-	}
+	provider := OIDCProvider(document)
 	if err := provider.validate(); err != nil {
 		return OIDCProvider{}, err
 	}
