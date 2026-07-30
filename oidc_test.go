@@ -95,6 +95,7 @@ func TestOIDCTokenRejectsUnsafeResponses(t *testing.T) {
 		{"oauth error", `{"error":"invalid_grant","error_description":"secret-refresh"}`, http.StatusBadRequest},
 		{"missing token", `{"token_type":"Bearer"}`, http.StatusOK},
 		{"opaque token", `{"access_token":"opaque","token_type":"Bearer"}`, http.StatusOK},
+		{"JWT missing exp", `{"access_token":"header.eyJzdWIiOiJ1c2VyIn0.signature","token_type":"Bearer"}`, http.StatusOK},
 		{"wrong type", `{"access_token":"` + oidcJWT(time.Now().Add(time.Hour)) + `","token_type":"DPoP"}`, http.StatusOK},
 		{"expired", `{"access_token":"` + oidcJWT(time.Now().Add(-time.Hour)) + `","token_type":"Bearer"}`, http.StatusOK},
 		{"trailing", `{"access_token":"` + oidcJWT(time.Now().Add(time.Hour)) + `","token_type":"Bearer"}{}`, http.StatusOK},
