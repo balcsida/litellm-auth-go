@@ -199,6 +199,9 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 }
 
 func loginCredential(ctx context.Context, client authClient, rawBase, flow string, noBrowser bool, team string, options litellmauth.AuthenticateOptions, deps dependencies) (litellmauth.Credential, error) {
+	if noBrowser && (flow == "browser" || flow == "litellm-sso") {
+		return litellmauth.Credential{}, errors.New("--no-browser cannot be used with explicit browser flows")
+	}
 	if flow == "litellm-sso" {
 		return client.Authenticate(ctx, options)
 	}
@@ -217,9 +220,6 @@ func loginCredential(ctx context.Context, client authClient, rawBase, flow strin
 	}
 	if team != "" {
 		return litellmauth.Credential{}, errors.New("--team is not supported with native OIDC")
-	}
-	if flow == "browser" && noBrowser {
-		return litellmauth.Credential{}, errors.New("--no-browser cannot be used with browser flow")
 	}
 	provider, err := client.DiscoverProvider(ctx, *config)
 	if err != nil {

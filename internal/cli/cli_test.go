@@ -366,7 +366,7 @@ func TestLoginTeamSelectionWithRealClient(t *testing.T) {
 					litellmauth.WithPollInterval(time.Millisecond),
 				)
 			}
-			args := append([]string{"--base-url", server.URL, "login", "--flow", "litellm-sso", "--no-browser"}, test.args...)
+			args := append([]string{"--base-url", server.URL, "login", "--flow", "litellm-sso"}, test.args...)
 			err := execute(context.Background(), args, deps)
 			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("execute() error = %v, want %v", err, test.wantErr)
@@ -941,6 +941,7 @@ func TestLoginSelectsNativeOIDCFlows(t *testing.T) {
 		{name: "device", args: []string{"--flow", "device"}, metadata: &config, provider: provider, want: "device"},
 		{name: "browser", args: []string{"--flow", "browser"}, metadata: &config, provider: provider, want: "browser"},
 		{name: "litellm SSO", args: []string{"--flow", "litellm-sso"}, metadata: &config, provider: provider, want: "sso"},
+		{name: "no browser conflicts with litellm SSO", args: []string{"--flow", "litellm-sso", "--no-browser"}, metadata: &config, provider: provider, wantErr: true},
 		{name: "absent metadata uses SSO", metadata: nil, want: "sso"},
 		{name: "no browser uses device", args: []string{"--no-browser"}, metadata: &config, provider: provider, want: "device"},
 		{name: "no browser conflicts with browser", args: []string{"--flow", "browser", "--no-browser"}, metadata: &config, provider: provider, wantErr: true},
