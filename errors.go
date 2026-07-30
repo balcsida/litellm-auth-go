@@ -39,6 +39,8 @@ var (
 	ErrSourceOutput = errors.New("invalid authentication source output")
 )
 
+func nativeOIDCProtocolError() error { return fmt.Errorf("%w: native OIDC discovery", ErrProtocol) }
+
 // HTTPError describes a non-successful LiteLLM CLI SSO response.
 type HTTPError struct {
 	// Op is the SSO operation that returned the response.
