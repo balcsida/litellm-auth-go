@@ -42,7 +42,7 @@ func (c *Client) exchangeToken(ctx context.Context, endpoint string, form url.Va
 	if err := ctx.Err(); err != nil {
 		return Credential{}, err
 	}
-	if _, err := normalizeOIDCURL(endpoint); err != nil || refresh.validate() != nil {
+	if _, err := normalizeOIDCURL(endpoint); err != nil || !validOIDCRefreshConfiguration(refresh) {
 		return Credential{}, ErrInvalidCredential
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
@@ -104,6 +104,18 @@ func (c *Client) exchangeToken(ctx context.Context, endpoint string, form url.Va
 		return Credential{}, nativeOIDCProtocolError()
 	}
 	return credential, nil
+}
+
+func validOIDCRefreshConfiguration(refresh OIDCRefresh) bool {
+	if _, err := normalizeOIDCURL(refresh.DiscoveryURL); err != nil || !validNativeOIDCString(refresh.ClientID) || len(refresh.Scopes) == 0 {
+		return false
+	}
+	for _, scope := range refresh.Scopes {
+		if !validNativeOIDCString(scope) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r OIDCRefresh) Clone() OIDCRefresh { r.Scopes = append([]string(nil), r.Scopes...); return r }
