@@ -74,8 +74,9 @@ jobs:
 
   smoke:
     name: LiteLLM full login smoke
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
+    env:
+      LITELLM_LICENSE: ${{ secrets.LITELLM_LICENSE }}
     services:
       postgres:
         image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
@@ -122,14 +123,9 @@ jobs:
           GENERIC_TOKEN_ENDPOINT: http://127.0.0.1:8080/default/token
           GENERIC_USERINFO_ENDPOINT: http://127.0.0.1:8080/default/userinfo
           LITELLM_MASTER_KEY: sk-smoke-master-key
-          LITELLM_LICENSE: ${{ secrets.LITELLM_LICENSE }}
           LITELLM_SALT_KEY: smoke-salt-key-with-at-least-32-bytes
           PROXY_BASE_URL: http://127.0.0.1:4000
         run: |
-          if [ -z "${LITELLM_LICENSE:-}" ]; then
-            echo "LITELLM_LICENSE must be configured for LiteLLM smoke."
-            exit 1
-          fi
           cat > "$RUNNER_TEMP/litellm-jwt.yaml" <<'EOF'
           general_settings:
             enable_jwt_auth: true
@@ -162,6 +158,7 @@ jobs:
           LITELLM_SMOKE_URL: http://127.0.0.1:4000
         run: go test -run '^TestLiteLLMFullLoginSmoke$' -count=1 .
       - name: Run native OIDC JWT mapping smoke
+        if: env.LITELLM_LICENSE != ''
         env:
           LITELLM_SMOKE_URL: http://127.0.0.1:4000
           LITELLM_NATIVE_OIDC_ISSUER: http://127.0.0.1:19090
