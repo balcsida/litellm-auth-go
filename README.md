@@ -86,12 +86,16 @@ it never uses a client secret. Configure LiteLLM to validate the issued JWT and
 map it to a virtual key, for example:
 
 ```yaml
-litellm_settings:
+general_settings:
+  enable_jwt_auth: true
   litellm_jwtauth:
-    jwks_url: https://idp.example.com/jwks
     user_id_jwt_field: sub
     virtual_key_claim_field: sub
     unregistered_jwt_client_behavior: auto_register
+    issuers:
+      - issuer: https://idp.example.com
+        jwks_url: https://idp.example.com/jwks
+        disable_audience_validation: true
 ```
 
 The proxy's public `/.well-known/litellm-ui-config` metadata advertises
