@@ -23,6 +23,12 @@ type DeviceAuthorization struct {
 	ExpiresIn, Interval                                            time.Duration
 }
 
+// String returns a secret-free device authorization description.
+func (DeviceAuthorization) String() string { return "OIDC device authorization" }
+
+// GoString returns a secret-free device authorization description.
+func (a DeviceAuthorization) GoString() string { return a.String() }
+
 // DeviceLoginOptions configures the device authorization flow.
 type DeviceLoginOptions struct {
 	OnAuthorization func(context.Context, DeviceAuthorization) error

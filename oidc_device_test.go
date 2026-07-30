@@ -3,6 +3,7 @@ package litellmauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,15 @@ func TestAuthenticateDeviceAuthorizesAndPolls(t *testing.T) {
 	}
 	if deviceForm.Get("client_id") != "native-client" || deviceForm.Get("scope") != "openid profile" || tokenForm.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" || tokenForm.Get("device_code") != "device-code" || tokenForm.Get("client_id") != "native-client" || tokenCalls != 2 || len(waits) != 1 || waits[0] != 3*time.Second {
 		t.Fatalf("device form = %q token form = %q calls = %d waits = %v", deviceForm, tokenForm, tokenCalls, waits)
+	}
+}
+
+func TestDeviceAuthorizationFormattingHidesDeviceCode(t *testing.T) {
+	authorization := DeviceAuthorization{DeviceCode: "device-code-secret", UserCode: "USER-CODE", VerificationURI: "https://verify.example.com"}
+	for _, formatted := range []string{authorization.String(), authorization.GoString(), fmt.Sprint(authorization), fmt.Sprintf("%+v", authorization), fmt.Sprintf("%#v", authorization)} {
+		if strings.Contains(formatted, authorization.DeviceCode) {
+			t.Fatalf("formatted authorization leaked device code: %q", formatted)
+		}
 	}
 }
 
