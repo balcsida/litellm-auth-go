@@ -27,6 +27,8 @@ var (
 	ErrNoCredential = errors.New("no stored LiteLLM credential")
 	// ErrCredentialStale reports that a stored credential is expired.
 	ErrCredentialStale = errors.New("stored LiteLLM credential is expired")
+	// ErrLoginRequired reports that the caller must authenticate again.
+	ErrLoginRequired = errors.New("LiteLLM login required")
 	// ErrOriginMismatch reports a credential issued by a different proxy URL.
 	ErrOriginMismatch = errors.New("stored credential belongs to a different LiteLLM proxy")
 	// ErrInvalidCredential reports a malformed or contradictory credential.

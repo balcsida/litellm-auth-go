@@ -58,8 +58,8 @@ func TestOIDCSourceRefreshesNearExpiryCredentialAndSavesRotation(t *testing.T) {
 	source.now = func() time.Time { return now }
 
 	credential, err := source.Credential(context.Background())
-	if err != nil || requests != 1 || store.saveCalls != 1 || credential.OIDCRefresh.RefreshToken != "rotated" || store.credential.OIDCRefresh.RefreshToken != "rotated" {
-		t.Fatalf("Credential() = %#v, %v; requests = %d saves = %d stored = %#v", credential, err, requests, store.saveCalls, store.credential)
+	if err != nil || requests != 1 || store.saveCalls != 1 || credential.OIDCRefresh.RefreshToken != "rotated" || store.credential.OIDCRefresh.RefreshToken != "rotated" || len(store.baseURLs) != 2 || store.baseURLs[0] != server.URL || store.baseURLs[1] != server.URL {
+		t.Fatalf("Credential() = %#v, %v; requests = %d saves = %d bases = %q stored = %#v", credential, err, requests, store.saveCalls, store.baseURLs, store.credential)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestOIDCSourceRefreshFailurePreservesStoredCredential(t *testing.T) {
 	source.now = func() time.Time { return now }
 
 	_, err = source.Credential(context.Background())
-	if err == nil || store.saveCalls != 0 || store.credential.Key != stored.Key || store.credential.OIDCRefresh.RefreshToken != "refresh" {
+	if err == nil || !errors.Is(err, ErrLoginRequired) || store.saveCalls != 0 || store.credential.Key != stored.Key || store.credential.OIDCRefresh.RefreshToken != "refresh" {
 		t.Fatalf("Credential() error = %v; saves = %d stored = %#v", err, store.saveCalls, store.credential)
 	}
 }
@@ -92,7 +92,7 @@ func TestOIDCSourceRequiresLoginWithoutRefreshMetadata(t *testing.T) {
 	}
 	source.now = func() time.Time { return now }
 
-	if _, err := source.Credential(context.Background()); !errors.Is(err, ErrCredentialStale) || store.saveCalls != 0 {
+	if _, err := source.Credential(context.Background()); !errors.Is(err, ErrLoginRequired) || store.saveCalls != 0 {
 		t.Fatalf("Credential() error = %v; saves = %d", err, store.saveCalls)
 	}
 }
@@ -107,8 +107,53 @@ func TestOIDCSourceHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := source.Credential(ctx); !errors.Is(err, context.Canceled) || store.loadCalls != 0 {
+	if _, err := source.Credential(ctx); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrLoginRequired) || store.loadCalls != 0 {
 		t.Fatalf("Credential() error = %v; loads = %d", err, store.loadCalls)
+	}
+}
+
+func TestOIDCSourceCanceledRefreshPreservesStoredCredential(t *testing.T) {
+	now := time.Now()
+	started := make(chan struct{})
+	server := testserver.New(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	stored := oidcSourceCredential(now.Add(-time.Hour), ptr(validOIDCRefresh(server.URL)))
+	store := &oidcSourceStore{credential: stored}
+	client, _ := New(server.URL, WithHTTPClient(server.Client()))
+	source, err := NewOIDCSource(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.now = func() time.Time { return now }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() { _, err := source.Credential(ctx); errs <- err }()
+	<-started
+	cancel()
+	err = <-errs
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrLoginRequired) || store.saveCalls != 0 || store.credential.Key != stored.Key || store.credential.OIDCRefresh.RefreshToken != "refresh" {
+		t.Fatalf("Credential() error = %v; saves = %d stored = %#v", err, store.saveCalls, store.credential)
+	}
+}
+
+func TestOIDCSourceRejectsStoredCredentialFromOtherOrigin(t *testing.T) {
+	client, err := New("https://proxy-a.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &oidcSourceStore{loadErr: ErrOriginMismatch}
+	source, err := NewOIDCSource(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = source.Credential(context.Background())
+	if !errors.Is(err, ErrOriginMismatch) || errors.Is(err, ErrLoginRequired) || len(store.baseURLs) != 1 || store.baseURLs[0] != "https://proxy-a.example.com" {
+		t.Fatalf("Credential() error = %v; bases = %q", err, store.baseURLs)
 	}
 }
 
@@ -160,18 +205,25 @@ func TestOIDCSourceStringIsSecretFree(t *testing.T) {
 type oidcSourceStore struct {
 	mu         sync.Mutex
 	credential Credential
+	loadErr    error
 	loadCalls  int
 	saveCalls  int
+	baseURLs   []string
 }
 
-func (s *oidcSourceStore) Load(ctx context.Context, _ *url.URL) (Credential, error) {
+func (s *oidcSourceStore) Load(ctx context.Context, baseURL *url.URL) (Credential, error) {
 	if err := ctx.Err(); err != nil {
 		return Credential{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadCalls++
-	return s.credential.Clone(), nil
+	if baseURL == nil {
+		s.baseURLs = append(s.baseURLs, "")
+	} else {
+		s.baseURLs = append(s.baseURLs, baseURL.String())
+	}
+	return s.credential.Clone(), s.loadErr
 }
 
 func (s *oidcSourceStore) Save(ctx context.Context, credential Credential) error {

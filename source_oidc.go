@@ -16,10 +16,11 @@ type OIDCCredentialStore interface {
 
 // OIDCSource refreshes a stored OIDC credential when it is no longer fresh.
 type OIDCSource struct {
-	client *Client
-	store  OIDCCredentialStore
-	now    func() time.Time
-	mu     sync.Mutex
+	client  *Client
+	store   OIDCCredentialStore
+	baseURL *url.URL
+	now     func() time.Time
+	mu      sync.Mutex
 }
 
 // NewOIDCSource creates a source backed by a refreshable OIDC credential store.
@@ -30,18 +31,22 @@ func NewOIDCSource(client *Client, store OIDCCredentialStore) (*OIDCSource, erro
 	if store == nil {
 		return nil, errors.New("OIDC credential store must not be nil")
 	}
-	return &OIDCSource{client: client, store: store, now: time.Now}, nil
+	baseURL, err := url.Parse(client.baseURL)
+	if err != nil {
+		return nil, errors.New("OIDC source client URL is invalid")
+	}
+	return &OIDCSource{client: client, store: store, baseURL: baseURL, now: time.Now}, nil
 }
 
 // Credential returns the stored credential or refreshes it once for concurrent callers.
 func (s *OIDCSource) Credential(ctx context.Context) (Credential, error) {
-	if s == nil || s.client == nil || s.store == nil || s.now == nil {
+	if s == nil || s.client == nil || s.store == nil || s.baseURL == nil || s.now == nil {
 		return Credential{}, ErrSourceUnavailable
 	}
 	if err := ctx.Err(); err != nil {
-		return Credential{}, err
+		return Credential{}, oidcLoginRequired(err)
 	}
-	credential, err := s.store.Load(ctx, nil)
+	credential, err := s.store.Load(ctx, s.baseURL)
 	if err != nil || credential.Fresh(s.now()) {
 		return credential.Clone(), err
 	}
@@ -49,27 +54,27 @@ func (s *OIDCSource) Credential(ctx context.Context) (Credential, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return Credential{}, err
+		return Credential{}, oidcLoginRequired(err)
 	}
-	credential, err = s.store.Load(ctx, nil)
+	credential, err = s.store.Load(ctx, s.baseURL)
 	if err != nil || credential.Fresh(s.now()) {
 		return credential.Clone(), err
 	}
 	if credential.AuthMethod != AuthMethodOIDC || credential.OIDCRefresh == nil {
-		return Credential{}, ErrCredentialStale
+		return Credential{}, oidcLoginRequired(ErrCredentialStale)
 	}
 	credential, err = s.client.Refresh(ctx, credential)
 	if err != nil {
-		return Credential{}, err
+		return Credential{}, oidcLoginRequired(err)
 	}
 	if err := credential.Validate(); err != nil {
-		return Credential{}, err
+		return Credential{}, oidcLoginRequired(err)
 	}
 	if !credential.Fresh(s.now()) {
-		return Credential{}, ErrCredentialStale
+		return Credential{}, oidcLoginRequired(ErrCredentialStale)
 	}
 	if err := s.store.Save(ctx, credential); err != nil {
-		return Credential{}, err
+		return Credential{}, oidcLoginRequired(err)
 	}
 	return credential.Clone(), nil
 }
@@ -79,3 +84,5 @@ func (*OIDCSource) String() string { return "refreshing OIDC authentication sour
 
 // GoString returns a secret-free description.
 func (s *OIDCSource) GoString() string { return s.String() }
+
+func oidcLoginRequired(err error) error { return errors.Join(ErrLoginRequired, err) }
