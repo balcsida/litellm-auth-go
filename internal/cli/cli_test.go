@@ -994,6 +994,40 @@ func TestLoginSelectsNativeOIDCFlows(t *testing.T) {
 	}
 }
 
+func TestLoginFallsBackToSSOWhenRealisticMetadataOmitsNativeOIDC(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/litellm-ui-config" {
+			t.Fatalf("request path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"proxy_base_url":"https://proxy.example.com","admin_ui_disabled":false,"use_admin_single_sign_on":true}`)
+	}))
+	defer server.Close()
+	client, err := litellmauth.New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := new(fakeStore)
+	deps, _, _ := testDependencies(store)
+	ssoCalls := 0
+	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
+		return fakeClient{
+			discover: client.Discover,
+			authenticate: func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
+				ssoCalls++
+				return successfulCredential(), nil
+			},
+		}, nil
+	}
+
+	if err := execute(context.Background(), []string{"login"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	if ssoCalls != 1 {
+		t.Fatalf("SSO calls = %d, want 1", ssoCalls)
+	}
+}
+
 func TestPrintTokenRefreshesOnlyStaleOIDCCredentials(t *testing.T) {
 	stale := successfulCredential()
 	stale.AuthMethod = litellmauth.AuthMethodOIDC

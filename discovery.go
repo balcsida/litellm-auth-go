@@ -52,7 +52,7 @@ func (c *Client) Discover(ctx context.Context) (*NativeOIDCConfig, error) {
 		return nil, err
 	}
 	var document proxyDiscoveryDocument
-	if err := c.discoverJSON(ctx, c.endpoint(".well-known", "litellm-ui-config").String(), "proxy discovery", &document); err != nil {
+	if err := c.discoverJSON(ctx, c.endpoint(".well-known", "litellm-ui-config").String(), "proxy discovery", &document, false); err != nil {
 		return nil, err
 	}
 	if document.NativeOIDC == nil {
@@ -78,7 +78,7 @@ func (c *Client) DiscoverProvider(ctx context.Context, config NativeOIDCConfig) 
 		return OIDCProvider{}, err
 	}
 	var document providerDiscoveryDocument
-	if err := c.discoverJSON(ctx, config.DiscoveryURL, "provider discovery", &document); err != nil {
+	if err := c.discoverJSON(ctx, config.DiscoveryURL, "provider discovery", &document, true); err != nil {
 		return OIDCProvider{}, err
 	}
 	provider := OIDCProvider{
@@ -93,7 +93,7 @@ func (c *Client) DiscoverProvider(ctx context.Context, config NativeOIDCConfig) 
 	return provider, nil
 }
 
-func (c *Client) discoverJSON(ctx context.Context, rawURL, op string, target any) error {
+func (c *Client) discoverJSON(ctx context.Context, rawURL, op string, target any, strict bool) error {
 	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -125,7 +125,9 @@ func (c *Client) discoverJSON(ctx context.Context, rawURL, op string, target any
 		return nativeOIDCProtocolError()
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(target); err != nil {
 		return nativeOIDCProtocolError()
 	}

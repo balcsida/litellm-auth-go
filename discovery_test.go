@@ -12,6 +12,7 @@ import (
 
 func TestDiscoverProxyConfiguration(t *testing.T) {
 	valid := `{"native_oidc":{"discovery_url":"https://idp.example.com/.well-known/openid-configuration","client_id":"litellm-native","scopes":["openid","profile"]}}`
+	validWithSiblings := `{"proxy_base_url":"https://proxy.example.com","admin_ui_disabled":false,"native_oidc":{"discovery_url":"https://idp.example.com/.well-known/openid-configuration","client_id":"litellm-native","scopes":["openid","profile"]},"use_admin_single_sign_on":true}`
 	for _, test := range []struct {
 		name    string
 		body    string
@@ -19,8 +20,10 @@ func TestDiscoverProxyConfiguration(t *testing.T) {
 		wantErr error
 	}{
 		{name: "absent", body: `{}`, want: nil},
+		{name: "absent with standard siblings", body: `{"proxy_base_url":"https://proxy.example.com","admin_ui_disabled":false,"use_admin_single_sign_on":true}`, want: nil},
 		{name: "explicit null", body: `{"native_oidc":null}`, wantErr: ErrProtocol},
 		{name: "valid", body: valid, want: &NativeOIDCConfig{DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration", ClientID: "litellm-native", Scopes: []string{"openid", "profile"}}},
+		{name: "valid with standard siblings", body: validWithSiblings, want: &NativeOIDCConfig{DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration", ClientID: "litellm-native", Scopes: []string{"openid", "profile"}}},
 		{name: "trailing document", body: valid + `{}`, wantErr: ErrProtocol},
 		{name: "oversized document", body: `{"native_oidc":` + strings.Repeat(" ", 1<<20) + `null}`, wantErr: ErrProtocol},
 		{name: "blank client ID", body: `{"native_oidc":{"discovery_url":"https://idp.example.com/config","client_id":" ","scopes":["openid"]}}`, wantErr: ErrProtocol},
