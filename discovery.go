@@ -12,6 +12,8 @@ import (
 
 const maxDiscoveryResponseBytes = 1 << 20
 
+var errDiscoveryRedirect = errors.New("native OIDC discovery redirect")
+
 // NativeOIDCConfig is the public-client configuration advertised by a LiteLLM proxy.
 type NativeOIDCConfig struct {
 	DiscoveryURL string
@@ -28,7 +30,7 @@ type OIDCProvider struct {
 }
 
 type proxyDiscoveryDocument struct {
-	NativeOIDC *nativeOIDCConfig `json:"native_oidc"`
+	NativeOIDC json.RawMessage `json:"native_oidc"`
 }
 
 type nativeOIDCConfig struct {
@@ -56,7 +58,11 @@ func (c *Client) Discover(ctx context.Context) (*NativeOIDCConfig, error) {
 	if document.NativeOIDC == nil {
 		return nil, nil
 	}
-	config, err := nativeOIDCConfigFrom(document.NativeOIDC)
+	var native nativeOIDCConfig
+	if err := decodeNativeOIDCConfig(document.NativeOIDC, &native); err != nil {
+		return nil, err
+	}
+	config, err := nativeOIDCConfigFrom(&native)
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +101,13 @@ func (c *Client) discoverJSON(ctx context.Context, rawURL, op string, target any
 		return nativeOIDCProtocolError()
 	}
 	req.Header.Set("Accept", "application/json")
-	response, err := c.httpClient.Do(req)
+	client := *c.httpClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return errDiscoveryRedirect }
+	response, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, errDiscoveryRedirect) {
+			return nativeOIDCProtocolError()
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -113,6 +124,19 @@ func (c *Client) discoverJSON(ctx context.Context, rawURL, op string, target any
 	if err != nil || len(data) > maxDiscoveryResponseBytes {
 		return nativeOIDCProtocolError()
 	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return nativeOIDCProtocolError()
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nativeOIDCProtocolError()
+	}
+	return nil
+}
+
+func decodeNativeOIDCConfig(data json.RawMessage, target *nativeOIDCConfig) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {

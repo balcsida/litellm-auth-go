@@ -19,6 +19,7 @@ func TestDiscoverProxyConfiguration(t *testing.T) {
 		wantErr error
 	}{
 		{name: "absent", body: `{}`, want: nil},
+		{name: "explicit null", body: `{"native_oidc":null}`, wantErr: ErrProtocol},
 		{name: "valid", body: valid, want: &NativeOIDCConfig{DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration", ClientID: "litellm-native", Scopes: []string{"openid", "profile"}}},
 		{name: "trailing document", body: valid + `{}`, wantErr: ErrProtocol},
 		{name: "oversized document", body: `{"native_oidc":` + strings.Repeat(" ", 1<<20) + `null}`, wantErr: ErrProtocol},
@@ -50,6 +51,24 @@ func TestDiscoverProxyConfiguration(t *testing.T) {
 				t.Fatalf("Discover() = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestDiscoverRejectsRedirects(t *testing.T) {
+	server := testserver.New(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://idp.example.com/openid-configuration", http.StatusFound)
+	})
+	defer server.Close()
+
+	client, err := New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Discover(context.Background()); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("Discover() error = %v, want ErrProtocol", err)
+	}
+	if _, err := client.DiscoverProvider(context.Background(), NativeOIDCConfig{DiscoveryURL: server.URL + "/openid-configuration", ClientID: "client", Scopes: []string{"openid"}}); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("DiscoverProvider() error = %v, want ErrProtocol", err)
 	}
 }
 
