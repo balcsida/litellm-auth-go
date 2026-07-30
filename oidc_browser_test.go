@@ -71,7 +71,6 @@ func TestAuthenticateBrowserRejectsInvalidCallbacks(t *testing.T) {
 		name  string
 		query url.Values
 	}{
-		{name: "state mismatch", query: url.Values{"code": {"code"}, "state": {"wrong"}}},
 		{name: "provider error", query: url.Values{"error": {"access_denied"}, "error_description": {"browser-secret"}, "state": {"placeholder"}}},
 		{name: "missing code", query: url.Values{"state": {"placeholder"}}},
 	} {
@@ -115,6 +114,42 @@ func TestAuthenticateBrowserIgnoresProviderErrorWithWrongState(t *testing.T) {
 	result := <-callbacks
 	if result.code != "code" || result.err != nil {
 		t.Fatalf("matching callback result = %#v", result)
+	}
+}
+
+func TestAuthenticateBrowserIgnoresCodeOrMissingCodeWithWrongState(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		query string
+	}{
+		{name: "code", query: "code=forged&state=wrong-state"},
+		{name: "missing code", query: "state=wrong-state"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			callbacks := make(chan browserCallback, 1)
+			handler := browserCallbackHandler(callbacks, "expected-state")
+
+			wrong := httptest.NewRecorder()
+			handler.ServeHTTP(wrong, httptest.NewRequest(http.MethodGet, "/callback?"+test.query, nil))
+			if wrong.Code != http.StatusBadRequest {
+				t.Fatalf("wrong-state status = %d", wrong.Code)
+			}
+			select {
+			case result := <-callbacks:
+				t.Fatalf("wrong-state callback terminated callback flow: %#v", result)
+			default:
+			}
+
+			matched := httptest.NewRecorder()
+			handler.ServeHTTP(matched, httptest.NewRequest(http.MethodGet, "/callback?code=code&state=expected-state", nil))
+			if matched.Code != http.StatusOK {
+				t.Fatalf("matching callback status = %d", matched.Code)
+			}
+			result := <-callbacks
+			if result.code != "code" || result.err != nil {
+				t.Fatalf("matching callback result = %#v", result)
+			}
+		})
 	}
 }
 
