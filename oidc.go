@@ -20,6 +20,10 @@ type oidcTokenResponse struct {
 	Scope        string `json:"scope"`
 }
 
+type oidcTokenError struct{ code string }
+
+func (e oidcTokenError) Error() string { return "native OIDC token request failed" }
+
 // Refresh exchanges credential's OIDC refresh token for a fresh access token.
 func (c *Client) Refresh(ctx context.Context, credential Credential) (Credential, error) {
 	if credential.AuthMethod != AuthMethodOIDC || credential.OIDCRefresh == nil || credential.OIDCRefresh.validate() != nil {
@@ -64,6 +68,9 @@ func (c *Client) exchangeToken(ctx context.Context, endpoint string, form url.Va
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		if tokenErr := readOIDCTokenError(response); tokenErr != nil {
+			return Credential{}, errors.Join(&HTTPError{Op: "OIDC token", StatusCode: response.StatusCode}, *tokenErr)
+		}
 		return Credential{}, &HTTPError{Op: "OIDC token", StatusCode: response.StatusCode}
 	}
 	if responseContentType(response) != "application/json" {
@@ -104,6 +111,31 @@ func (c *Client) exchangeToken(ctx context.Context, endpoint string, form url.Va
 		return Credential{}, nativeOIDCProtocolError()
 	}
 	return credential, nil
+}
+
+func readOIDCTokenError(response *http.Response) *oidcTokenError {
+	if responseContentType(response) != "application/json" {
+		return nil
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxOIDCTokenResponseBytes+1))
+	if err != nil || len(data) > maxOIDCTokenResponseBytes {
+		return nil
+	}
+	var decoded struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+		ErrorURI         string `json:"error_uri"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil || decoded.Error == "" {
+		return nil
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil
+	}
+	return &oidcTokenError{code: decoded.Error}
 }
 
 func validOIDCRefreshConfiguration(refresh OIDCRefresh) bool {
