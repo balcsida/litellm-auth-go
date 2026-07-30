@@ -117,11 +117,16 @@ func TestOIDCSourceHonorsCanceledContext(t *testing.T) {
 func TestOIDCSourceCanceledRefreshPreservesStoredCredential(t *testing.T) {
 	now := time.Now()
 	started := make(chan struct{})
+	release := make(chan struct{})
 	server := testserver.New(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(started)
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	defer server.Close()
+	defer close(release)
 	stored := oidcSourceCredential(now.Add(-time.Hour), ptr(validOIDCRefresh(server.URL)))
 	store := &oidcSourceStore{credential: stored}
 	client, _ := New(server.URL, WithHTTPClient(server.Client()))
