@@ -3,9 +3,11 @@ package litellmauth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -152,9 +154,77 @@ func TestOIDCSourceRejectsStoredCredentialFromOtherOrigin(t *testing.T) {
 	}
 
 	_, err = source.Credential(context.Background())
-	if !errors.Is(err, ErrOriginMismatch) || errors.Is(err, ErrLoginRequired) || len(store.baseURLs) != 1 || store.baseURLs[0] != "https://proxy-a.example.com" {
+	if !errors.Is(err, ErrOriginMismatch) || !errors.Is(err, ErrLoginRequired) || len(store.baseURLs) != 1 || store.baseURLs[0] != "https://proxy-a.example.com" {
 		t.Fatalf("Credential() error = %v; bases = %q", err, store.baseURLs)
 	}
+}
+
+func TestOIDCSourceInitialLoadCancellationRequiresLogin(t *testing.T) {
+	client, _ := New("https://proxy.example.com")
+	started := make(chan struct{})
+	store := &oidcSourceStore{blockLoad: 1, loadStarted: started}
+	source, err := NewOIDCSource(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 1)
+	go func() { _, err := source.Credential(ctx); errs <- err }()
+	<-started
+	cancel()
+	assertSafeOIDCLoginError(t, <-errs, context.Canceled, "refresh-token")
+}
+
+func TestOIDCSourcePostLockLoadCancellationRequiresLogin(t *testing.T) {
+	now := time.Now()
+	client, _ := New("https://proxy.example.com")
+	started := make(chan struct{})
+	store := &oidcSourceStore{credential: oidcSourceCredential(now.Add(-time.Hour), ptr(validOIDCRefresh("https://idp.example.com/token"))), blockLoad: 2, loadStarted: started}
+	source, err := NewOIDCSource(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.now = func() time.Time { return now }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source.mu.Lock()
+	errs := make(chan error, 1)
+	go func() { _, err := source.Credential(ctx); errs <- err }()
+	source.mu.Unlock()
+	<-started
+	cancel()
+	assertSafeOIDCLoginError(t, <-errs, context.Canceled, "refresh-token")
+}
+
+func TestOIDCSourceHidesLoadErrorSecrets(t *testing.T) {
+	client, _ := New("https://proxy.example.com")
+	cause := errors.New("refresh-token-load-secret")
+	source, err := NewOIDCSource(client, &oidcSourceStore{loadErr: cause})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = source.Credential(context.Background())
+	assertSafeOIDCLoginError(t, err, cause, "refresh-token-load-secret")
+}
+
+func TestOIDCSourceHidesSaveErrorSecrets(t *testing.T) {
+	now := time.Now()
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"`+oidcJWT(time.Now().Add(time.Hour))+`","token_type":"Bearer"}`)
+	}))
+	defer server.Close()
+	cause := errors.New("refresh-token-save-secret")
+	store := &oidcSourceStore{credential: oidcSourceCredential(now.Add(-time.Hour), ptr(validOIDCRefresh(server.URL))), saveErr: cause}
+	client, _ := New(server.URL, WithHTTPClient(server.Client()))
+	source, err := NewOIDCSource(client, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.now = func() time.Time { return now }
+	_, err = source.Credential(context.Background())
+	assertSafeOIDCLoginError(t, err, cause, "refresh-token-save-secret")
 }
 
 func TestOIDCSourceConcurrentCallsShareRefresh(t *testing.T) {
@@ -203,12 +273,15 @@ func TestOIDCSourceStringIsSecretFree(t *testing.T) {
 }
 
 type oidcSourceStore struct {
-	mu         sync.Mutex
-	credential Credential
-	loadErr    error
-	loadCalls  int
-	saveCalls  int
-	baseURLs   []string
+	mu          sync.Mutex
+	credential  Credential
+	loadErr     error
+	loadCalls   int
+	saveCalls   int
+	baseURLs    []string
+	blockLoad   int
+	loadStarted chan struct{}
+	saveErr     error
 }
 
 func (s *oidcSourceStore) Load(ctx context.Context, baseURL *url.URL) (Credential, error) {
@@ -216,14 +289,22 @@ func (s *oidcSourceStore) Load(ctx context.Context, baseURL *url.URL) (Credentia
 		return Credential{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.loadCalls++
 	if baseURL == nil {
 		s.baseURLs = append(s.baseURLs, "")
 	} else {
 		s.baseURLs = append(s.baseURLs, baseURL.String())
 	}
-	return s.credential.Clone(), s.loadErr
+	credential, err := s.credential.Clone(), s.loadErr
+	block := s.blockLoad == s.loadCalls
+	started := s.loadStarted
+	s.mu.Unlock()
+	if block {
+		close(started)
+		<-ctx.Done()
+		return Credential{}, ctx.Err()
+	}
+	return credential, err
 }
 
 func (s *oidcSourceStore) Save(ctx context.Context, credential Credential) error {
@@ -231,10 +312,18 @@ func (s *oidcSourceStore) Save(ctx context.Context, credential Credential) error
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.saveCalls++
 	s.credential = credential.Clone()
-	return nil
+	err := s.saveErr
+	s.mu.Unlock()
+	return err
+}
+
+func assertSafeOIDCLoginError(t *testing.T, err, cause error, secret string) {
+	t.Helper()
+	if !errors.Is(err, ErrLoginRequired) || !errors.Is(err, cause) || strings.Contains(err.Error(), secret) || strings.Contains(fmt.Sprint(err), secret) {
+		t.Fatalf("error = %v", err)
+	}
 }
 
 func oidcSourceCredential(expiresAt time.Time, refresh *OIDCRefresh) Credential {
