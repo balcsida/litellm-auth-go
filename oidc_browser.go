@@ -108,7 +108,17 @@ func browserCallbackHandler(callback chan<- browserCallback, state string) http.
 			return
 		}
 		query := r.URL.Query()
-		if query.Get("error") != "" || query.Get("code") == "" || subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(state)) != 1 {
+		stateMatches := subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(state)) == 1
+		if query.Get("error") != "" {
+			if !stateMatches {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			callback <- browserCallback{err: browserCallbackProtocolError()}
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if query.Get("code") == "" || !stateMatches {
 			callback <- browserCallback{err: browserCallbackProtocolError()}
 			w.WriteHeader(http.StatusBadRequest)
 			return

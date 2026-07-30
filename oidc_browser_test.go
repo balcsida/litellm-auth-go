@@ -72,7 +72,7 @@ func TestAuthenticateBrowserRejectsInvalidCallbacks(t *testing.T) {
 		query url.Values
 	}{
 		{name: "state mismatch", query: url.Values{"code": {"code"}, "state": {"wrong"}}},
-		{name: "provider error", query: url.Values{"error": {"access_denied"}, "error_description": {"browser-secret"}}},
+		{name: "provider error", query: url.Values{"error": {"access_denied"}, "error_description": {"browser-secret"}, "state": {"placeholder"}}},
 		{name: "missing code", query: url.Values{"state": {"placeholder"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -89,6 +89,32 @@ func TestAuthenticateBrowserRejectsInvalidCallbacks(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestAuthenticateBrowserIgnoresProviderErrorWithWrongState(t *testing.T) {
+	callbacks := make(chan browserCallback, 1)
+	handler := browserCallbackHandler(callbacks, "expected-state")
+
+	wrong := httptest.NewRecorder()
+	handler.ServeHTTP(wrong, httptest.NewRequest(http.MethodGet, "/callback?error=access_denied&state=wrong-state", nil))
+	if wrong.Code != http.StatusBadRequest {
+		t.Fatalf("wrong-state status = %d", wrong.Code)
+	}
+	select {
+	case result := <-callbacks:
+		t.Fatalf("wrong-state provider error terminated callback flow: %#v", result)
+	default:
+	}
+
+	matched := httptest.NewRecorder()
+	handler.ServeHTTP(matched, httptest.NewRequest(http.MethodGet, "/callback?code=code&state=expected-state", nil))
+	if matched.Code != http.StatusOK {
+		t.Fatalf("matching callback status = %d", matched.Code)
+	}
+	result := <-callbacks
+	if result.code != "code" || result.err != nil {
+		t.Fatalf("matching callback result = %#v", result)
 	}
 }
 
