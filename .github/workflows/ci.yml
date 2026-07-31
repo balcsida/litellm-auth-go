@@ -75,6 +75,8 @@ jobs:
   smoke:
     name: LiteLLM full login smoke
     runs-on: ubuntu-latest
+    env:
+      LITELLM_LICENSE: ${{ secrets.LITELLM_LICENSE }}
     services:
       postgres:
         image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
@@ -108,7 +110,8 @@ jobs:
       - name: Install LiteLLM
         run: |
           python -m pip install \
-            "litellm[proxy] @ git+https://github.com/BerriAI/litellm.git@c2efe9e422b6ce62f0001d847d578d1e7d7ea6e3" \
+            "litellm[proxy] @ git+https://github.com/BerriAI/litellm.git@cad32fd9bc9cbbe3524269c24ffb399fe0481771" \
+            "fastapi==0.140.1" \
             "prisma==0.11.0"
           prisma generate --schema "$(python -c 'import pathlib, litellm; print(pathlib.Path(litellm.__file__).parent / "proxy/schema.prisma")')"
       - name: Start LiteLLM
@@ -124,7 +127,25 @@ jobs:
           LITELLM_SALT_KEY: smoke-salt-key-with-at-least-32-bytes
           PROXY_BASE_URL: http://127.0.0.1:4000
         run: |
-          litellm --host 127.0.0.1 --port 4000 > "$RUNNER_TEMP/litellm.log" 2>&1 &
+          if [ -n "${LITELLM_LICENSE:-}" ]; then
+            cat > "$RUNNER_TEMP/litellm.yaml" <<'EOF'
+          general_settings:
+            enable_jwt_auth: true
+            litellm_jwtauth:
+              virtual_key_claim_field: sub
+              unregistered_jwt_client_behavior: auto_register
+              user_id_jwt_field: sub
+              issuers:
+                - issuer: http://127.0.0.1:19090
+                  jwks_url: http://127.0.0.1:19090/jwks
+                  disable_audience_validation: true
+          EOF
+          else
+            cat > "$RUNNER_TEMP/litellm.yaml" <<'EOF'
+          {}
+          EOF
+          fi
+          litellm --config "$RUNNER_TEMP/litellm.yaml" --host 127.0.0.1 --port 4000 > "$RUNNER_TEMP/litellm.log" 2>&1 &
           for _ in {1..60}; do
             if curl --fail --silent http://127.0.0.1:4000/health/readiness >/dev/null; then
               curl --fail --silent --show-error \
@@ -133,6 +154,14 @@ jobs:
                 --header "Content-Type: application/json" \
                 --data '{"user_id":"smoke-user","user_email":"smoke@example.com","user_role":"internal_user"}' \
                 http://127.0.0.1:4000/user/new >/dev/null
+              if [ -n "${LITELLM_LICENSE:-}" ]; then
+                curl --fail --silent --show-error \
+                  --request POST \
+                  --header "Authorization: Bearer $LITELLM_MASTER_KEY" \
+                  --header "Content-Type: application/json" \
+                  --data '{"user_id":"native-oidc-smoke-user","user_email":"native-oidc-smoke@example.com","user_role":"internal_user"}' \
+                  http://127.0.0.1:4000/user/new >/dev/null
+              fi
               exit 0
             fi
             sleep 2
@@ -143,6 +172,12 @@ jobs:
         env:
           LITELLM_SMOKE_URL: http://127.0.0.1:4000
         run: go test -run '^TestLiteLLMFullLoginSmoke$' -count=1 .
+      - name: Run native OIDC JWT mapping smoke
+        if: env.LITELLM_LICENSE != ''
+        env:
+          LITELLM_SMOKE_URL: http://127.0.0.1:4000
+          LITELLM_NATIVE_OIDC_ISSUER: http://127.0.0.1:19090
+        run: go test -run '^TestLiteLLMNativeOIDCSmoke$' -count=1 .
       - if: failure()
         name: Show LiteLLM log
         run: cat "$RUNNER_TEMP/litellm.log"

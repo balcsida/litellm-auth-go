@@ -79,13 +79,48 @@ Install from this module's checkout:
 go install ./cmd/litellm-auth
 ```
 
-Log in with a browser, or print the URL for manual/headless completion:
+`login` discovers native OIDC metadata from the proxy and uses a public-client
+Authorization Code + PKCE flow by default. The client needs a loopback redirect
+URI (`http://127.0.0.1:<ephemeral-port>/callback`) registered with the provider;
+it never uses a client secret. Configure LiteLLM to validate the issued JWT and
+map it to a virtual key, for example:
+
+```yaml
+general_settings:
+  enable_jwt_auth: true
+  litellm_jwtauth:
+    user_id_jwt_field: sub
+    virtual_key_claim_field: sub
+    unregistered_jwt_client_behavior: auto_register
+    issuers:
+      - issuer: https://idp.example.com
+        jwks_url: https://idp.example.com/jwks
+        disable_audience_validation: true
+```
+
+The proxy's public `/.well-known/litellm-ui-config` metadata advertises
+`native_oidc.issuer`, `native_oidc.client_id`, and `native_oidc.scopes`. The
+issuer is the trust anchor: this client appends
+`/.well-known/openid-configuration` to it to locate the provider document, and
+rejects that document unless its `issuer` matches byte-for-byte.
+LiteLLM verifies and maps the JWT; this client does not verify its signature.
+
+Choose a flow explicitly when needed:
 
 ```sh
 litellm-auth --base-url https://proxy.example.com login
+litellm-auth --base-url https://proxy.example.com login --flow browser
+litellm-auth --base-url https://proxy.example.com login --flow device
+litellm-auth --base-url https://proxy.example.com login --flow litellm-sso
 litellm-auth --base-url https://proxy.example.com login --no-browser
-litellm-auth --base-url https://proxy.example.com login --team team-engineering
 ```
+
+`auto` is the default: it uses browser OIDC first, falling back to device
+authorization only if it cannot bind the local listener before opening a
+browser. `--no-browser` selects device authorization when native metadata is
+available. Native OIDC flows do not support `--team`; `litellm-sso` preserves
+the existing LiteLLM team selection flow. `auto` uses LiteLLM SSO only when
+native metadata is absent, and never switches flows after authentication starts.
 
 Other commands are:
 
@@ -98,7 +133,7 @@ litellm-auth import-token
 
 ### Additional credential sources
 
-`login` remains the LiteLLM CLI SSO flow. Use `import-token` to store a token
+Use `import-token` to store a token
 from an environment variable, rotating file, stdin, or an external helper:
 
 ```sh
@@ -117,9 +152,11 @@ litellm-auth --base-url https://proxy.example.com import-token \
 See [authentication sources and binders](docs/AUTH_SOURCES.md) for lifetime
 rules, external-helper schema, and library usage.
 
-`print-token` only reads a fresh local token; it never logs in, refreshes a
-token, or makes a network request. Use `--base-url` when reading a token for a
-specific proxy. It rejects a token issued by another normalized proxy URL.
+`print-token` reads a fresh local token. For an expired native OIDC credential,
+it refreshes at the OIDC token endpoint and atomically saves the replacement
+before printing it. It remains network-free for LiteLLM SSO and imported
+credentials. Use `--base-url` when reading a token for a specific proxy. It
+rejects a token issued by another normalized proxy URL.
 
 | Setting | Meaning |
 | --- | --- |
@@ -129,8 +166,9 @@ specific proxy. It rejects a token issued by another normalized proxy URL.
 | `--timeout` | Total login timeout; default is 10 minutes. |
 | `--allow-insecure-http` | Permits non-loopback HTTP for development only. |
 | `--verbose` | Shows safe polling progress. |
-| `login --no-browser` | Does not launch a browser; prints the URL and code. |
-| `login --team` | Selects a LiteLLM team ID without prompting. |
+| `login --flow` | `auto` (default), `browser`, `device`, or `litellm-sso`. |
+| `login --no-browser` | Uses device authorization for native OIDC; prints the LiteLLM SSO URL and code otherwise. |
+| `login --team` | Selects a LiteLLM team ID without prompting; unavailable for native OIDC. |
 
 ## Credential storage and lifetime
 
@@ -140,10 +178,9 @@ rejects insecure existing file or directory modes. Treat the file and printed
 token as secrets. Credentials are bound to their normalized issuer URL, so a
 token cannot be loaded for a different proxy origin.
 
-This protocol has no refresh or revocation operation. `logout` removes only the
-local token file; revoke or rotate a server-side key through the LiteLLM proxy
-when that is required. After a credential expires, SSO users rerun `login` and
-imported-token users rerun `import-token` from their configured source.
+Native OIDC credentials refresh automatically through `print-token`; LiteLLM
+SSO and imported tokens do not. `logout` removes only the local token file;
+revoke or rotate server-side credentials through the provider or LiteLLM proxy.
 
 ## Verification
 

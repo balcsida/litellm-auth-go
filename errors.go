@@ -27,6 +27,8 @@ var (
 	ErrNoCredential = errors.New("no stored LiteLLM credential")
 	// ErrCredentialStale reports that a stored credential is expired.
 	ErrCredentialStale = errors.New("stored LiteLLM credential is expired")
+	// ErrLoginRequired reports that the caller must authenticate again.
+	ErrLoginRequired = errors.New("LiteLLM login required")
 	// ErrOriginMismatch reports a credential issued by a different proxy URL.
 	ErrOriginMismatch = errors.New("stored credential belongs to a different LiteLLM proxy")
 	// ErrInvalidCredential reports a malformed or contradictory credential.
@@ -38,6 +40,8 @@ var (
 	// ErrSourceOutput reports invalid external source output.
 	ErrSourceOutput = errors.New("invalid authentication source output")
 )
+
+func nativeOIDCProtocolError() error { return fmt.Errorf("%w: native OIDC discovery", ErrProtocol) }
 
 // HTTPError describes a non-successful LiteLLM CLI SSO response.
 type HTTPError struct {

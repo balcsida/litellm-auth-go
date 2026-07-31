@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	litellmauth "github.com/balcsida/litellm-auth-go"
+	"github.com/balcsida/litellm-auth-go/internal/testserver"
 )
 
 func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
@@ -123,6 +125,60 @@ func TestFileStoreRoundTripsGenericCredentialMetadata(t *testing.T) {
 		len(loaded.Scopes) != 1 ||
 		loaded.Scopes[0] != "litellm.invoke" {
 		t.Fatalf("loaded = %#v", loaded)
+	}
+}
+
+func TestFileStoreRoundTripsOIDCRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token.json")
+	store, _ := NewFileStore(path)
+	refresh := litellmauth.OIDCRefresh{Issuer: "https://idp.example.com", TokenEndpoint: "https://idp.example.com/token", ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
+	credential := litellmauth.Credential{BaseURL: "https://proxy.example.com", Key: "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature", AuthMethod: litellmauth.AuthMethodOIDC, TokenType: "Bearer", OIDCRefresh: &refresh}
+	if err := store.Save(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"oidc_refresh"`) || strings.Contains(string(raw), `"attribution_metadata":{"refresh`) {
+		t.Fatalf("stored JSON = %s", raw)
+	}
+	loaded, err := store.Load(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.OIDCRefresh == nil || loaded.OIDCRefresh.RefreshToken != refresh.RefreshToken || loaded.OIDCRefresh.Scopes[0] != "openid" {
+		t.Fatalf("loaded = %#v", loaded)
+	}
+}
+
+func TestFileStoreRefreshFailureLeavesCredentialUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token.json")
+	store, _ := NewFileStore(path)
+	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) }))
+	defer server.Close()
+	refresh := litellmauth.OIDCRefresh{Issuer: server.URL, TokenEndpoint: server.URL, ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
+	credential := litellmauth.Credential{BaseURL: "https://proxy.example.com", Key: "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature", AuthMethod: litellmauth.AuthMethodOIDC, TokenType: "Bearer", OIDCRefresh: &refresh}
+	if err := store.Save(context.Background(), credential); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := litellmauth.New(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Refresh(context.Background(), credential); err == nil {
+		t.Fatal("Refresh() succeeded")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("failed refresh changed credential file")
 	}
 }
 

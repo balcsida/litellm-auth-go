@@ -24,6 +24,19 @@ func isLoopbackHost(host string) bool {
 	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
 }
 
+func normalizeOIDCURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Fragment != "" || u.ForceQuery || u.Opaque != "" {
+		return nil, errors.New("invalid OIDC URL")
+	}
+	scheme, host, ok := baseurl.Origin(u)
+	if !ok || (scheme == "http" && !isLoopbackHost(u.Hostname())) {
+		return nil, errors.New("invalid OIDC URL")
+	}
+	u.Scheme, u.Host = scheme, host
+	return u, nil
+}
+
 func (c *Client) startURL() *url.URL { return c.endpoint("sso", "cli", "start") }
 
 func (c *Client) pollURL(loginID, teamID string) *url.URL {
