@@ -6,7 +6,7 @@ inspected on 2026-07-31.
 
 The native OIDC contract additionally tracks the unmerged
 [BerriAI/litellm#35234](https://github.com/BerriAI/litellm/pull/35234) at head
-`804aef6558e2e077d2c876ba5c132673b046fb42`. Re-pin it once that PR merges.
+`dd6bdd19e35fb8298cc8a0fa44c29fd6ca369af3`. Re-pin it once that PR merges.
 
 The canonical upstream files inspected at that commit are:
 
