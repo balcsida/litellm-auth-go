@@ -12,13 +12,20 @@ import (
 
 const maxDiscoveryResponseBytes = 1 << 20
 
+// providerConfigurationPath is appended to the issuer to locate the OpenID
+// Provider Configuration document, per OpenID Connect Discovery 1.0.
+const providerConfigurationPath = "/.well-known/openid-configuration"
+
 var errDiscoveryRedirect = errors.New("native OIDC discovery redirect")
 
 // NativeOIDCConfig is the public-client configuration advertised by a LiteLLM proxy.
 type NativeOIDCConfig struct {
-	DiscoveryURL string
-	ClientID     string
-	Scopes       []string
+	// Issuer is the OIDC issuer identifier and the trust anchor. It is kept
+	// byte-for-byte as advertised: it is compared by exact string equality
+	// against the provider document, so it must never be normalized.
+	Issuer   string
+	ClientID string
+	Scopes   []string
 }
 
 // OIDCProvider contains the endpoints advertised by an OpenID Connect provider.
@@ -34,9 +41,9 @@ type proxyDiscoveryDocument struct {
 }
 
 type nativeOIDCConfig struct {
-	DiscoveryURL string   `json:"discovery_url"`
-	ClientID     string   `json:"client_id"`
-	Scopes       []string `json:"scopes"`
+	Issuer   string   `json:"issuer"`
+	ClientID string   `json:"client_id"`
+	Scopes   []string `json:"scopes"`
 }
 
 type providerDiscoveryDocument struct {
@@ -78,14 +85,28 @@ func (c *Client) DiscoverProvider(ctx context.Context, config NativeOIDCConfig) 
 		return OIDCProvider{}, err
 	}
 	var document providerDiscoveryDocument
-	if err := c.discoverJSON(ctx, config.DiscoveryURL, "provider discovery", &document, true); err != nil {
+	if err := c.discoverJSON(ctx, providerConfigurationURL(config.Issuer), "provider discovery", &document, true); err != nil {
 		return OIDCProvider{}, err
+	}
+	// The issuer is the trust anchor: a provider document that names a
+	// different issuer than the one the proxy advertised is rejected outright
+	// rather than followed. Compared byte-for-byte, per OpenID Connect
+	// Discovery 1.0 section 4.3.
+	if document.Issuer != config.Issuer {
+		return OIDCProvider{}, nativeOIDCProtocolError()
 	}
 	provider := OIDCProvider(document)
 	if err := provider.validate(); err != nil {
 		return OIDCProvider{}, err
 	}
 	return provider, nil
+}
+
+// providerConfigurationURL derives the OpenID Provider Configuration URL from an
+// issuer identifier by removing a single trailing slash and appending the
+// well-known path. No other normalization is applied.
+func providerConfigurationURL(issuer string) string {
+	return strings.TrimSuffix(issuer, "/") + providerConfigurationPath
 }
 
 func (c *Client) discoverJSON(ctx context.Context, rawURL, op string, target any, strict bool) error {
@@ -150,14 +171,14 @@ func nativeOIDCConfigFrom(raw *nativeOIDCConfig) (NativeOIDCConfig, error) {
 	if raw == nil {
 		return NativeOIDCConfig{}, nativeOIDCProtocolError()
 	}
-	return validatedNativeOIDCConfig(NativeOIDCConfig{DiscoveryURL: raw.DiscoveryURL, ClientID: raw.ClientID, Scopes: raw.Scopes})
+	return validatedNativeOIDCConfig(NativeOIDCConfig{Issuer: raw.Issuer, ClientID: raw.ClientID, Scopes: raw.Scopes})
 }
 
 func validatedNativeOIDCConfig(config NativeOIDCConfig) (NativeOIDCConfig, error) {
 	if !validNativeOIDCString(config.ClientID) || len(config.Scopes) == 0 {
 		return NativeOIDCConfig{}, nativeOIDCProtocolError()
 	}
-	if _, err := normalizeOIDCURL(config.DiscoveryURL); err != nil {
+	if !validOIDCIssuer(config.Issuer) {
 		return NativeOIDCConfig{}, nativeOIDCProtocolError()
 	}
 	for _, scope := range config.Scopes {
@@ -185,4 +206,14 @@ func (provider OIDCProvider) validate() error {
 
 func validNativeOIDCString(value string) bool {
 	return strings.TrimSpace(value) != "" && !containsControl(value)
+}
+
+// validOIDCIssuer reports whether value is usable as an issuer identifier.
+// Stricter than a plain endpoint URL: an issuer carries no query component.
+func validOIDCIssuer(value string) bool {
+	parsed, err := normalizeOIDCURL(value)
+	if err != nil {
+		return false
+	}
+	return parsed.RawQuery == ""
 }

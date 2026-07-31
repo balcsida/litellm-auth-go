@@ -78,7 +78,7 @@ func (c *Client) AuthenticateDevice(ctx context.Context, config NativeOIDCConfig
 		}
 	}
 
-	refresh := OIDCRefresh{DiscoveryURL: config.DiscoveryURL, TokenEndpoint: provider.TokenEndpoint, ClientID: config.ClientID, Scopes: config.Scopes}
+	refresh := OIDCRefresh{Issuer: config.Issuer, TokenEndpoint: provider.TokenEndpoint, ClientID: config.ClientID, Scopes: config.Scopes}
 	interval := authorization.Interval
 	for {
 		if err := deviceDeadline(ctx, deadline, c.now()); err != nil {

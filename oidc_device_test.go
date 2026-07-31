@@ -181,7 +181,7 @@ func TestAuthenticateDeviceProvidesFallbackVerificationData(t *testing.T) {
 }
 
 func deviceConfig(discovery string) NativeOIDCConfig {
-	return NativeOIDCConfig{DiscoveryURL: discovery, ClientID: "native-client", Scopes: []string{"openid", "profile"}}
+	return NativeOIDCConfig{Issuer: discovery, ClientID: "native-client", Scopes: []string{"openid", "profile"}}
 }
 
 func deviceProvider(base string) OIDCProvider {

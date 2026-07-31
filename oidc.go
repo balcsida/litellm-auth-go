@@ -139,7 +139,7 @@ func readOIDCTokenError(response *http.Response) *oidcTokenError {
 }
 
 func validOIDCRefreshConfiguration(refresh OIDCRefresh) bool {
-	if _, err := normalizeOIDCURL(refresh.DiscoveryURL); err != nil || !validNativeOIDCString(refresh.ClientID) || len(refresh.Scopes) == 0 {
+	if !validOIDCIssuer(refresh.Issuer) || !validNativeOIDCString(refresh.ClientID) || len(refresh.Scopes) == 0 {
 		return false
 	}
 	for _, scope := range refresh.Scopes {

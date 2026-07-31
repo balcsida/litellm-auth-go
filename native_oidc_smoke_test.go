@@ -147,7 +147,7 @@ func nativeOIDCSmokeProxy(t *testing.T, baseURL, issuer string) *nativeOIDCSmoke
 	proxy.Server = nativeOIDCSmokeHTTPServer(t, "127.0.0.1:0", http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/.well-known/litellm-ui-config" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"native_oidc":{"discovery_url":"`+issuer+`/.well-known/openid-configuration","client_id":"native-oidc-smoke","scopes":["openid","profile"]}}`)
+			_, _ = io.WriteString(w, `{"native_oidc":{"issuer":"`+issuer+`","client_id":"native-oidc-smoke","scopes":["openid","profile"]}}`)
 			return
 		}
 		if request.URL.Path == "/v1/models" {

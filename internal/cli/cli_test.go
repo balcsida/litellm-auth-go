@@ -923,7 +923,7 @@ func TestPrintTokenPerformsNoNetworkRequest(t *testing.T) {
 }
 
 func TestLoginSelectsNativeOIDCFlows(t *testing.T) {
-	config := litellmauth.NativeOIDCConfig{DiscoveryURL: "https://idp.example.com/config", ClientID: "cli", Scopes: []string{"openid"}}
+	config := litellmauth.NativeOIDCConfig{Issuer: "https://idp.example.com", ClientID: "cli", Scopes: []string{"openid"}}
 	provider := litellmauth.OIDCProvider{Issuer: "https://idp.example.com", AuthorizationEndpoint: "https://idp.example.com/authorize", TokenEndpoint: "https://idp.example.com/token", DeviceAuthorizationEndpoint: "https://idp.example.com/device"}
 	for _, test := range []struct {
 		name       string
@@ -1032,7 +1032,7 @@ func TestPrintTokenRefreshesOnlyStaleOIDCCredentials(t *testing.T) {
 	stale := successfulCredential()
 	stale.AuthMethod = litellmauth.AuthMethodOIDC
 	stale.ExpiresAt = testNow.Add(-time.Hour)
-	stale.OIDCRefresh = &litellmauth.OIDCRefresh{DiscoveryURL: "https://idp.example.com/config", TokenEndpoint: "https://idp.example.com/token", ClientID: "cli", RefreshToken: "refresh", Scopes: []string{"openid"}}
+	stale.OIDCRefresh = &litellmauth.OIDCRefresh{Issuer: "https://idp.example.com", TokenEndpoint: "https://idp.example.com/token", ClientID: "cli", RefreshToken: "refresh", Scopes: []string{"openid"}}
 	store := &fakeStore{credential: stale}
 	deps, stdout, _ := testDependencies(store)
 	deps.newClient = func(string, time.Duration, bool) (authClient, error) {
@@ -1054,7 +1054,7 @@ func TestPrintTokenRefreshFailureLeavesStoreAndStdoutUntouched(t *testing.T) {
 	stale := successfulCredential()
 	stale.AuthMethod = litellmauth.AuthMethodOIDC
 	stale.ExpiresAt = testNow.Add(-time.Hour)
-	stale.OIDCRefresh = &litellmauth.OIDCRefresh{DiscoveryURL: "https://idp.example.com/config", TokenEndpoint: "https://idp.example.com/token", ClientID: "cli", RefreshToken: "refresh", Scopes: []string{"openid"}}
+	stale.OIDCRefresh = &litellmauth.OIDCRefresh{Issuer: "https://idp.example.com", TokenEndpoint: "https://idp.example.com/token", ClientID: "cli", RefreshToken: "refresh", Scopes: []string{"openid"}}
 	store := &fakeStore{credential: stale}
 	deps, stdout, _ := testDependencies(store)
 	deps.newClient = func(string, time.Duration, bool) (authClient, error) {

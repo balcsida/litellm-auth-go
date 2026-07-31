@@ -123,5 +123,5 @@ func oidcJWT(exp time.Time) string {
 }
 
 func validOIDCRefresh(endpoint string) OIDCRefresh {
-	return OIDCRefresh{DiscoveryURL: endpoint, TokenEndpoint: endpoint, ClientID: "client", RefreshToken: "refresh", Scopes: []string{"openid"}}
+	return OIDCRefresh{Issuer: endpoint, TokenEndpoint: endpoint, ClientID: "client", RefreshToken: "refresh", Scopes: []string{"openid"}}
 }

@@ -131,7 +131,7 @@ func TestFileStoreRoundTripsGenericCredentialMetadata(t *testing.T) {
 func TestFileStoreRoundTripsOIDCRefresh(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token.json")
 	store, _ := NewFileStore(path)
-	refresh := litellmauth.OIDCRefresh{DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration", TokenEndpoint: "https://idp.example.com/token", ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
+	refresh := litellmauth.OIDCRefresh{Issuer: "https://idp.example.com", TokenEndpoint: "https://idp.example.com/token", ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
 	credential := litellmauth.Credential{BaseURL: "https://proxy.example.com", Key: "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature", AuthMethod: litellmauth.AuthMethodOIDC, TokenType: "Bearer", OIDCRefresh: &refresh}
 	if err := store.Save(context.Background(), credential); err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestFileStoreRefreshFailureLeavesCredentialUnchanged(t *testing.T) {
 	store, _ := NewFileStore(path)
 	server := testserver.New(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadRequest) }))
 	defer server.Close()
-	refresh := litellmauth.OIDCRefresh{DiscoveryURL: server.URL, TokenEndpoint: server.URL, ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
+	refresh := litellmauth.OIDCRefresh{Issuer: server.URL, TokenEndpoint: server.URL, ClientID: "client", RefreshToken: "refresh-secret", Scopes: []string{"openid"}}
 	credential := litellmauth.Credential{BaseURL: "https://proxy.example.com", Key: "header.eyJleHAiOjQxMDI0NDQ4MDB9.signature", AuthMethod: litellmauth.AuthMethodOIDC, TokenType: "Bearer", OIDCRefresh: &refresh}
 	if err := store.Save(context.Background(), credential); err != nil {
 		t.Fatal(err)

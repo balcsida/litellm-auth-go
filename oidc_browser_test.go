@@ -35,7 +35,7 @@ func TestAuthenticateBrowserExchangesMatchingCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	credential, err := client.AuthenticateBrowser(context.Background(), NativeOIDCConfig{DiscoveryURL: tokenServer.URL, ClientID: "native-client", Scopes: []string{"openid", "profile"}}, OIDCProvider{Issuer: tokenServer.URL, AuthorizationEndpoint: tokenServer.URL + "/authorize", TokenEndpoint: tokenServer.URL}, BrowserLoginOptions{
+	credential, err := client.AuthenticateBrowser(context.Background(), NativeOIDCConfig{Issuer: tokenServer.URL, ClientID: "native-client", Scopes: []string{"openid", "profile"}}, OIDCProvider{Issuer: tokenServer.URL, AuthorizationEndpoint: tokenServer.URL + "/authorize", TokenEndpoint: tokenServer.URL}, BrowserLoginOptions{
 		OpenURL: func(_ context.Context, u *url.URL) error {
 			authorization = u
 			callback(t, u, url.Values{"code": {"authorization-code"}, "state": {u.Query().Get("state")}})
@@ -259,7 +259,7 @@ func TestAuthenticateBrowserDoesNotExposeBrowserSecrets(t *testing.T) {
 }
 
 func browserConfig() NativeOIDCConfig {
-	return NativeOIDCConfig{DiscoveryURL: "https://idp.example.com/config", ClientID: "native-client", Scopes: []string{"openid"}}
+	return NativeOIDCConfig{Issuer: "https://idp.example.com", ClientID: "native-client", Scopes: []string{"openid"}}
 }
 
 func browserProvider() OIDCProvider {

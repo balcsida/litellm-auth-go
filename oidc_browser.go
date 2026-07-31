@@ -91,7 +91,7 @@ func (c *Client) AuthenticateBrowser(ctx context.Context, config NativeOIDCConfi
 		if result.err != nil {
 			return Credential{}, result.err
 		}
-		refresh := OIDCRefresh{DiscoveryURL: config.DiscoveryURL, TokenEndpoint: provider.TokenEndpoint, ClientID: config.ClientID, Scopes: config.Scopes}
+		refresh := OIDCRefresh{Issuer: config.Issuer, TokenEndpoint: provider.TokenEndpoint, ClientID: config.ClientID, Scopes: config.Scopes}
 		return c.exchangeToken(ctx, provider.TokenEndpoint, url.Values{"grant_type": {"authorization_code"}, "client_id": {config.ClientID}, "code": {result.code}, "code_verifier": {verifier}, "redirect_uri": {redirect.String()}}, refresh)
 	case <-ctx.Done():
 		return Credential{}, ctx.Err()

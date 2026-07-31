@@ -41,7 +41,7 @@ type Client struct {
 
 // OIDCRefresh contains the secret and public data needed to refresh an OIDC credential.
 type OIDCRefresh struct {
-	DiscoveryURL  string   `json:"discovery_url"`
+	Issuer        string   `json:"issuer"`
 	TokenEndpoint string   `json:"token_endpoint"`
 	ClientID      string   `json:"client_id"`
 	RefreshToken  string   `json:"refresh_token"`
@@ -52,11 +52,11 @@ func (OIDCRefresh) String() string     { return "OIDC refresh credential" }
 func (r OIDCRefresh) GoString() string { return r.String() }
 
 func (r OIDCRefresh) validate() error {
-	if len(r.DiscoveryURL) > maxCredentialKeyBytes || len(r.TokenEndpoint) > maxCredentialKeyBytes || len(r.ClientID) > maxCredentialKeyBytes || len(r.RefreshToken) > maxCredentialKeyBytes ||
+	if len(r.Issuer) > maxCredentialKeyBytes || len(r.TokenEndpoint) > maxCredentialKeyBytes || len(r.ClientID) > maxCredentialKeyBytes || len(r.RefreshToken) > maxCredentialKeyBytes ||
 		!validNativeOIDCString(r.ClientID) || r.RefreshToken == "" || containsKeySpaceOrControl(r.RefreshToken) {
 		return ErrInvalidCredential
 	}
-	if _, err := normalizeOIDCURL(r.DiscoveryURL); err != nil {
+	if !validOIDCIssuer(r.Issuer) {
 		return ErrInvalidCredential
 	}
 	if _, err := normalizeOIDCURL(r.TokenEndpoint); err != nil {
