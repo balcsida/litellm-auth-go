@@ -99,7 +99,10 @@ general_settings:
 ```
 
 The proxy's public `/.well-known/litellm-ui-config` metadata advertises
-`native_oidc.discovery_url`, `native_oidc.client_id`, and `native_oidc.scopes`.
+`native_oidc.issuer`, `native_oidc.client_id`, and `native_oidc.scopes`. The
+issuer is the trust anchor: this client appends
+`/.well-known/openid-configuration` to it to locate the provider document, and
+rejects that document unless its `issuer` matches byte-for-byte.
 LiteLLM verifies and maps the JWT; this client does not verify its signature.
 
 Choose a flow explicitly when needed:
