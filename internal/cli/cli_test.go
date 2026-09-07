@@ -22,12 +22,26 @@ import (
 var testNow = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 
 type fakeClient struct {
-	authenticate func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	authenticate     func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	authenticatePKCE func(context.Context, litellmauth.PKCEOptions) (litellmauth.Credential, error)
 }
 
 func (c fakeClient) Authenticate(ctx context.Context, options litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
 	return c.authenticate(ctx, options)
 }
+
+func (c fakeClient) AuthenticatePKCE(ctx context.Context, options litellmauth.PKCEOptions) (litellmauth.Credential, error) {
+	if c.authenticatePKCE == nil {
+		return litellmauth.Credential{}, errors.New("unexpected PKCE login")
+	}
+	return c.authenticatePKCE(ctx, options)
+}
+
+func (c fakeClient) RefreshPKCE(context.Context, litellmauth.Credential) (litellmauth.Credential, error) {
+	return litellmauth.Credential{}, errors.New("unexpected PKCE refresh")
+}
+
+func (c fakeClient) RevokePKCE(context.Context, litellmauth.Credential) error { return nil }
 
 type fakeStore struct {
 	credential litellmauth.Credential
