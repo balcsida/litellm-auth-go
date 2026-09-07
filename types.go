@@ -126,6 +126,19 @@ type Credential struct {
 	IssuedAt time.Time `json:"issued_at"`
 	// ExpiresAt is the credential expiry derived from the key or issue time.
 	ExpiresAt time.Time `json:"expires_at"`
+
+	// RefreshToken renews a PKCE credential without a browser. It is a secret
+	// on the same footing as Key and is only set for AuthMethodPKCE.
+	RefreshToken string `json:"refresh_token,omitempty"`
+	// ClientID is the dynamically registered public client that owns the
+	// refresh token.
+	ClientID string `json:"client_id,omitempty"`
+	// TokenEndpoint is the proxy endpoint that refreshes the credential.
+	TokenEndpoint string `json:"token_endpoint,omitempty"`
+	// RevocationEndpoint is the proxy endpoint that revokes the refresh token.
+	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	// Resource is the RFC 8707 resource indicator the credential was minted for.
+	Resource string `json:"resource,omitempty"`
 }
 
 // String returns a secret-free credential description.
@@ -158,7 +171,12 @@ func (c Credential) Validate() error {
 		containsControl(c.Subject) ||
 		containsControl(c.UserID) ||
 		containsControl(c.TeamID) ||
-		containsControl(c.TeamAlias) {
+		containsControl(c.TeamAlias) ||
+		containsKeySpaceOrControl(c.RefreshToken) ||
+		containsControl(c.ClientID) ||
+		containsControl(c.TokenEndpoint) ||
+		containsControl(c.RevocationEndpoint) ||
+		containsControl(c.Resource) {
 		return ErrInvalidCredential
 	}
 	for _, team := range c.Teams {
@@ -222,9 +240,21 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		AttributionMetadata json.RawMessage `json:"attribution_metadata"`
 		IssuedAt            time.Time       `json:"issued_at"`
 		ExpiresAt           time.Time       `json:"expires_at"`
+		RefreshToken        string          `json:"refresh_token"`
+		ClientID            string          `json:"client_id"`
+		TokenEndpoint       string          `json:"token_endpoint"`
+		RevocationEndpoint  string          `json:"revocation_endpoint"`
+		Resource            string          `json:"resource"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
+	}
+	if containsKeySpaceOrControl(decoded.RefreshToken) ||
+		containsControl(decoded.ClientID) ||
+		containsControl(decoded.TokenEndpoint) ||
+		containsControl(decoded.RevocationEndpoint) ||
+		containsControl(decoded.Resource) {
+		return fmt.Errorf("%w: credential refresh metadata contains control characters", ErrProtocol)
 	}
 	if containsControl(string(decoded.AuthMethod)) ||
 		containsControl(decoded.TokenType) ||
@@ -266,6 +296,11 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		AttributionMetadata: metadata,
 		IssuedAt:            decoded.IssuedAt,
 		ExpiresAt:           decoded.ExpiresAt,
+		RefreshToken:        decoded.RefreshToken,
+		ClientID:            decoded.ClientID,
+		TokenEndpoint:       decoded.TokenEndpoint,
+		RevocationEndpoint:  decoded.RevocationEndpoint,
+		Resource:            decoded.Resource,
 	}
 	c.ExpiresAt = c.Expiry()
 	return nil
