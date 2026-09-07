@@ -62,11 +62,13 @@ type PKCEContract struct {
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported"`
 }
 
-// PKCESession is one in-progress browser sign-in. The verifier and state are
-// never exported or serialized; the loopback listener is bound before the
-// authorize URL is built, so the redirect URI is exact.
+// PKCESession is one in-progress browser sign-in, either against the proxy's
+// own authorization server (StartPKCE) or straight against an identity
+// provider (StartOIDC). The verifier, state, and nonce are never exported or
+// serialized; the loopback listener is bound before the authorize URL is
+// built, so the redirect URI is exact.
 type PKCESession struct {
-	// AuthorizeURL is the proxy URL the user opens in a browser.
+	// AuthorizeURL is the URL the user opens in a browser.
 	AuthorizeURL *url.URL
 	// RedirectURI is the loopback callback, e.g. http://127.0.0.1:54321/callback.
 	RedirectURI string
@@ -75,6 +77,9 @@ type PKCESession struct {
 	clientID string
 	verifier string
 	state    string
+	nonce    string
+	// provider is set for IdP-direct sessions and nil for proxy sessions.
+	provider *OIDCProvider
 	listener net.Listener
 }
 
@@ -256,6 +261,9 @@ func (c *Client) Wait(ctx context.Context, session *PKCESession) (Credential, er
 	case result := <-outcomes:
 		if result.err != nil {
 			return Credential{}, result.err
+		}
+		if session.provider != nil {
+			return c.redeemOIDCCode(ctx, session, result.code)
 		}
 		return c.redeemPKCECode(ctx, session, result.code)
 	}
