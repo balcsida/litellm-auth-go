@@ -215,6 +215,7 @@ func (c *Client) Wait(ctx context.Context, session *PKCESession) (Credential, er
 	if session.listener == nil {
 		return Credential{}, errors.New("LiteLLM PKCE session is not started")
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, c.maxWait)
 	defer cancel()
 
@@ -253,7 +254,7 @@ func (c *Client) Wait(ctx context.Context, session *PKCESession) (Credential, er
 			// The browser never reached the loopback callback: the sign-in was
 			// abandoned, or the authorize URL was altered (a wrapped copy-paste
 			// makes the proxy answer 400 instead of redirecting here).
-			return Credential{}, LoginTimeoutError{}
+			return Credential{}, LoginTimeoutError{callerDeadline: errors.Is(parent.Err(), context.DeadlineExceeded)}
 		}
 		return Credential{}, ctx.Err()
 	case result := <-outcomes:

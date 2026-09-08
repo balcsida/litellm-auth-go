@@ -408,6 +408,31 @@ func TestPKCEWaitHonoursCancellation(t *testing.T) {
 	}
 }
 
+func TestPKCEWaitDistinguishesDeadlines(t *testing.T) {
+	for _, callerDeadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "session", true: "caller"}[callerDeadline], func(t *testing.T) {
+			proxy := newFakePKCEProxy(t)
+			client := proxy.client(t)
+			session, err := client.StartPKCE(context.Background(), PKCEOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			if callerDeadline {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+			} else {
+				client.maxWait = time.Millisecond
+			}
+			_, err = client.Wait(ctx, session)
+			if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrLoginExpired) == callerDeadline {
+				t.Fatalf("caller deadline %v: got %v (expired=%v)", callerDeadline, err, errors.Is(err, ErrLoginExpired))
+			}
+		})
+	}
+}
+
 func TestPKCERedirectPortsAreHonoured(t *testing.T) {
 	proxy := newFakePKCEProxy(t)
 	busy, err := net.Listen("tcp", "127.0.0.1:0")
