@@ -267,6 +267,33 @@ func TestOIDCProviderValidation(t *testing.T) {
 	}
 }
 
+func TestOIDCAuthorizePreservesProviderQuery(t *testing.T) {
+	idp := newFakeIdP(t)
+	provider := idp.provider()
+	query := url.Values{"tenant": {"example"}, "resource": {"one", "two"}}
+	for _, key := range []string{"response_type", "client_id", "redirect_uri", "scope", "state", "nonce", "code_challenge", "code_challenge_method"} {
+		query[key] = []string{"stale", "duplicate"}
+	}
+	provider.AuthorizeURL = provider.authorizeURL() + "?" + query.Encode()
+	session, err := idp.client(t).StartOIDC(context.Background(), OIDCOptions{Provider: provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	got := session.AuthorizeURL.Query()
+	if got.Get("tenant") != "example" || strings.Join(got["resource"], ",") != "one,two" {
+		t.Fatalf("provider query was lost: %v", got)
+	}
+	for key := range query {
+		if key == "tenant" || key == "resource" {
+			continue
+		}
+		if len(got[key]) != 1 || got.Get(key) == "" || got.Get(key) == "stale" || got.Get(key) == "duplicate" {
+			t.Errorf("protocol parameter %s = %v; want one generated value", key, got[key])
+		}
+	}
+}
+
 func TestOIDCRefreshKeepsSubjectAndHandlesRotation(t *testing.T) {
 	idp := newFakeIdP(t)
 	client := idp.client(t)
