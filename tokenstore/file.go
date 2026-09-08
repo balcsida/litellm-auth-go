@@ -362,12 +362,15 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 
 func credentialMetadataContainsKey(credential litellmauth.Credential) bool {
 	containsKey := func(value string) bool {
-		return credential.Key != "" && strings.Contains(value, credential.Key)
+		return (credential.Key != "" && strings.Contains(value, credential.Key)) ||
+			(credential.RefreshToken != "" && strings.Contains(value, credential.RefreshToken))
 	}
 	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
 		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) ||
 		containsKey(string(credential.AuthMethod)) || containsKey(credential.TokenType) ||
-		containsKey(credential.Issuer) || containsKey(credential.Subject) {
+		containsKey(credential.Issuer) || containsKey(credential.Subject) ||
+		containsKey(credential.ClientID) || containsKey(credential.TokenEndpoint) ||
+		containsKey(credential.RevocationEndpoint) || containsKey(credential.Resource) {
 		return true
 	}
 	for _, scope := range credential.Scopes {

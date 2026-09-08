@@ -673,6 +673,7 @@ func TestWhoamiFreshStaleAndMissing(t *testing.T) {
 
 func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
 	credential := successfulCredential()
+	credential.RefreshToken = "refresh-secret"
 	credential.TeamID = "team-1"
 	credential.TeamAlias = "Engineering"
 	credential.ExpiresAt = testNow.Add(time.Hour)
@@ -696,7 +697,7 @@ func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
 	if err := execute(context.Background(), []string{"whoami", "--json"}, jsonDeps); err != nil {
 		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
 	}
-	if strings.Contains(stdout.String(), credential.Key) || stderr.Len() != 0 {
+	if strings.Contains(stdout.String(), credential.Key) || strings.Contains(stdout.String(), credential.RefreshToken) || stderr.Len() != 0 {
 		t.Fatalf("unsafe JSON output: stdout=%q stderr=%q", stdout, stderr)
 	}
 	var got map[string]any
@@ -776,6 +777,10 @@ func TestWhoamiRejectsCredentialKeyInGenericMetadata(t *testing.T) {
 		{name: "issuer", apply: func(c *litellmauth.Credential) { c.Issuer = "issuer-" + c.Key }},
 		{name: "subject", apply: func(c *litellmauth.Credential) { c.Subject = "subject-" + c.Key }},
 		{name: "scope", apply: func(c *litellmauth.Credential) { c.Scopes = []string{"scope-" + c.Key} }},
+		{name: "client ID", apply: func(c *litellmauth.Credential) { c.ClientID = "client-" + c.Key }},
+		{name: "token endpoint", apply: func(c *litellmauth.Credential) { c.TokenEndpoint = c.BaseURL + "/" + c.Key }},
+		{name: "revocation endpoint", apply: func(c *litellmauth.Credential) { c.RevocationEndpoint = c.BaseURL + "/" + c.Key }},
+		{name: "resource", apply: func(c *litellmauth.Credential) { c.Resource = c.BaseURL + "/" + c.Key }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			credential := successfulCredential()
@@ -811,6 +816,32 @@ func TestWhoamiJSONRejectsUnsafeMetadata(t *testing.T) {
 				t.Fatalf("execute() error = %v; stdout = %q; stderr = %q", err, stdout, stderr)
 			}
 		})
+	}
+}
+
+func TestWhoamiRejectsRefreshSecretsInMetadata(t *testing.T) {
+	for _, apply := range []func(*litellmauth.Credential){
+		func(c *litellmauth.Credential) { c.UserID = "user-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.TeamAlias = "team-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.Issuer = "issuer-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.Scopes = []string{"scope-" + c.RefreshToken} },
+		func(c *litellmauth.Credential) { c.AttributionMetadata = map[string]any{c.RefreshToken: "safe"} },
+		func(c *litellmauth.Credential) { c.AttributionMetadata = map[string]any{"field": c.RefreshToken} },
+		func(c *litellmauth.Credential) { c.ClientID = "client-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.TokenEndpoint = c.BaseURL + "/" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.RevocationEndpoint = c.BaseURL + "/" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.Resource = c.BaseURL + "/" + c.RefreshToken },
+	} {
+		for _, args := range [][]string{{"whoami"}, {"whoami", "--json"}} {
+			credential := successfulCredential()
+			credential.RefreshToken = "refresh-secret"
+			apply(&credential)
+			deps, stdout, stderr := testDependencies(&fakeStore{credential: credential})
+			if err := execute(context.Background(), args, deps); !errors.Is(err, litellmauth.ErrProtocol) ||
+				stdout.Len() != 0 || strings.Contains(stderr.String(), credential.RefreshToken) {
+				t.Errorf("%v error = %v; stdout = %q; stderr = %q", args, err, stdout, stderr)
+			}
+		}
 	}
 }
 
