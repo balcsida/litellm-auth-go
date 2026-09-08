@@ -333,6 +333,29 @@ func TestPKCERefreshRefusesForeignTokenEndpoint(t *testing.T) {
 	}
 }
 
+func TestPKCERefreshPreservesProxyBinding(t *testing.T) {
+	proxy := newFakePKCEProxy(t)
+	client := proxy.client(t)
+	credential, err := client.AuthenticatePKCE(context.Background(), PKCEOptions{OnSession: proxy.browse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := New(proxy.srv.URL + "/other-proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.RefreshPKCE(context.Background(), credential); !errors.Is(err, ErrOriginMismatch) {
+		t.Fatalf("refresh across proxy paths = %v; want ErrOriginMismatch", err)
+	}
+	if proxy.tokenCalls != 1 {
+		t.Fatal("mismatched proxy must not receive a refresh request")
+	}
+	credential.BaseURL += "/"
+	if _, err := client.RefreshPKCE(context.Background(), credential); err != nil {
+		t.Fatalf("equivalent normalized base URL: %v", err)
+	}
+}
+
 func TestPKCERevoke(t *testing.T) {
 	proxy := newFakePKCEProxy(t)
 	client := proxy.client(t)

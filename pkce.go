@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/balcsida/litellm-auth-go/internal/baseurl"
 )
 
 // AuthMethodPKCE marks a credential minted by the proxy's OAuth 2.1
@@ -291,6 +293,10 @@ func (c *Client) AuthenticatePKCE(ctx context.Context, options PKCEOptions) (Cre
 func (c *Client) RefreshPKCE(ctx context.Context, credential Credential) (Credential, error) {
 	if credential.AuthMethod != AuthMethodPKCE || credential.RefreshToken == "" || credential.TokenEndpoint == "" {
 		return Credential{}, fmt.Errorf("%w: credential has no refresh token", ErrRefreshRejected)
+	}
+	base, err := baseurl.Normalize(credential.BaseURL)
+	if err != nil || base.String() != c.baseURL {
+		return Credential{}, ErrOriginMismatch
 	}
 	tokenEndpoint, err := url.Parse(credential.TokenEndpoint)
 	if err != nil || !sameOrigin(c.baseURL, tokenEndpoint) {
