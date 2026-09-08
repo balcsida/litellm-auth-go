@@ -53,6 +53,11 @@ type diskCredential struct {
 	TeamAlias           string                 `json:"team_alias"`
 	TeamDetails         json.RawMessage        `json:"team_details"`
 	AttributionMetadata json.RawMessage        `json:"attribution_metadata"`
+	RefreshToken        string                 `json:"refresh_token,omitempty"`
+	ClientID            string                 `json:"client_id,omitempty"`
+	TokenEndpoint       string                 `json:"token_endpoint,omitempty"`
+	RevocationEndpoint  string                 `json:"revocation_endpoint,omitempty"`
+	Resource            string                 `json:"resource,omitempty"`
 }
 
 type savedCredential struct {
@@ -76,6 +81,11 @@ type savedCredential struct {
 	TeamAlias           string                 `json:"team_alias,omitempty"`
 	TeamDetails         []teamDetail           `json:"team_details,omitempty"`
 	AttributionMetadata map[string]any         `json:"attribution_metadata"`
+	RefreshToken        string                 `json:"refresh_token,omitempty"`
+	ClientID            string                 `json:"client_id,omitempty"`
+	TokenEndpoint       string                 `json:"token_endpoint,omitempty"`
+	RevocationEndpoint  string                 `json:"revocation_endpoint,omitempty"`
+	Resource            string                 `json:"resource,omitempty"`
 }
 
 type teamDetail struct {
@@ -239,6 +249,12 @@ func (d diskCredential) credential() (litellmauth.Credential, error) {
 		Subject:     d.Subject,
 		Scopes:      append([]string(nil), d.Scopes...),
 		NonExpiring: d.NonExpiring,
+
+		RefreshToken:       d.RefreshToken,
+		ClientID:           d.ClientID,
+		TokenEndpoint:      d.TokenEndpoint,
+		RevocationEndpoint: d.RevocationEndpoint,
+		Resource:           d.Resource,
 	}
 	if credential.AuthorizationHeader() == "" {
 		return litellmauth.Credential{}, invalidFile()
@@ -319,6 +335,11 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 		TeamID:              credential.TeamID,
 		Teams:               make([]string, 0, len(credential.Teams)),
 		AttributionMetadata: credential.AttributionMetadata,
+		RefreshToken:        credential.RefreshToken,
+		ClientID:            credential.ClientID,
+		TokenEndpoint:       credential.TokenEndpoint,
+		RevocationEndpoint:  credential.RevocationEndpoint,
+		Resource:            credential.Resource,
 	}
 	if !credential.ExpiresAt.IsZero() {
 		saved.ExpiresAt = credential.ExpiresAt.UTC().Format(time.RFC3339Nano)
@@ -341,12 +362,15 @@ func credentialForSave(credential litellmauth.Credential) (savedCredential, erro
 
 func credentialMetadataContainsKey(credential litellmauth.Credential) bool {
 	containsKey := func(value string) bool {
-		return credential.Key != "" && strings.Contains(value, credential.Key)
+		return (credential.Key != "" && strings.Contains(value, credential.Key)) ||
+			(credential.RefreshToken != "" && strings.Contains(value, credential.RefreshToken))
 	}
 	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
 		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) ||
 		containsKey(string(credential.AuthMethod)) || containsKey(credential.TokenType) ||
-		containsKey(credential.Issuer) || containsKey(credential.Subject) {
+		containsKey(credential.Issuer) || containsKey(credential.Subject) ||
+		containsKey(credential.ClientID) || containsKey(credential.TokenEndpoint) ||
+		containsKey(credential.RevocationEndpoint) || containsKey(credential.Resource) {
 		return true
 	}
 	for _, scope := range credential.Scopes {

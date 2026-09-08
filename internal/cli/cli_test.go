@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,12 +23,26 @@ import (
 var testNow = time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
 
 type fakeClient struct {
-	authenticate func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	authenticate     func(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	authenticatePKCE func(context.Context, litellmauth.PKCEOptions) (litellmauth.Credential, error)
 }
 
 func (c fakeClient) Authenticate(ctx context.Context, options litellmauth.AuthenticateOptions) (litellmauth.Credential, error) {
 	return c.authenticate(ctx, options)
 }
+
+func (c fakeClient) AuthenticatePKCE(ctx context.Context, options litellmauth.PKCEOptions) (litellmauth.Credential, error) {
+	if c.authenticatePKCE == nil {
+		return litellmauth.Credential{}, errors.New("unexpected PKCE login")
+	}
+	return c.authenticatePKCE(ctx, options)
+}
+
+func (c fakeClient) RefreshPKCE(context.Context, litellmauth.Credential) (litellmauth.Credential, error) {
+	return litellmauth.Credential{}, errors.New("unexpected PKCE refresh")
+}
+
+func (c fakeClient) RevokePKCE(context.Context, litellmauth.Credential) error { return nil }
 
 type fakeStore struct {
 	credential litellmauth.Credential
@@ -529,6 +544,86 @@ func TestLogoutIsIdempotentAndIgnoresIssuer(t *testing.T) {
 	}
 }
 
+func TestLogoutRevokesPKCEBeforeDeleting(t *testing.T) {
+	for _, name := range []string{"success", "unavailable", "rejected", "invalid file", "invalid client"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "token.json")
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if _, err := os.Stat(path); err != nil {
+					t.Errorf("credential removed before revocation: %v", err)
+				}
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				if r.Method != http.MethodPost || r.URL.Path != "/revoke" ||
+					r.Form.Get("token") != "refresh-secret" || r.Form.Get("token_type_hint") != "refresh_token" ||
+					r.Form.Get("client_id") != "client-1" {
+					t.Error("unexpected revocation request")
+				}
+				switch name {
+				case "unavailable":
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case "rejected":
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			credential := successfulCredential()
+			credential.BaseURL = server.URL
+			credential.AuthMethod = litellmauth.AuthMethodPKCE
+			credential.ExpiresAt = testNow.Add(time.Hour)
+			credential.RefreshToken = "refresh-secret"
+			credential.ClientID = "client-1"
+			credential.RevocationEndpoint = server.URL + "/revoke"
+			if name == "invalid client" {
+				credential.BaseURL = "http://proxy.example.com"
+			}
+			store, err := tokenstore.NewFileStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Save(context.Background(), credential); err != nil {
+				t.Fatal(err)
+			}
+			if name == "invalid file" {
+				if err := os.WriteFile(path, []byte("invalid JSON"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			deps := defaultDependencies(strings.NewReader(""), &stdout, &stderr)
+			deps.getenv = func(string) string { return "https://ignored.example.com" }
+			args := []string{"--token-file", path, "--base-url", "https://also-ignored.example.com", "logout"}
+			err = execute(context.Background(), args, deps)
+			if name == "success" {
+				if err != nil || requests != 1 {
+					t.Fatalf("logout error = %v, revocations = %d", err, requests)
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("credential remains after revocation: %v", err)
+				}
+				if err := execute(context.Background(), args, deps); err != nil || requests != 1 {
+					t.Fatalf("repeated logout error = %v, revocations = %d", err, requests)
+				}
+				return
+			}
+			if err == nil || stdout.Len() != 0 {
+				t.Fatalf("failed logout error = %v, stdout = %q", err, &stdout)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed logout changed credential: %v", err)
+			}
+		})
+	}
+}
+
 func TestWhoamiFreshStaleAndMissing(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -578,6 +673,7 @@ func TestWhoamiFreshStaleAndMissing(t *testing.T) {
 
 func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
 	credential := successfulCredential()
+	credential.RefreshToken = "refresh-secret"
 	credential.TeamID = "team-1"
 	credential.TeamAlias = "Engineering"
 	credential.ExpiresAt = testNow.Add(time.Hour)
@@ -601,7 +697,7 @@ func TestWhoamiJSONIsKeyFreeProjection(t *testing.T) {
 	if err := execute(context.Background(), []string{"whoami", "--json"}, jsonDeps); err != nil {
 		t.Fatalf("execute() error = %v; stderr = %q", err, stderr)
 	}
-	if strings.Contains(stdout.String(), credential.Key) || stderr.Len() != 0 {
+	if strings.Contains(stdout.String(), credential.Key) || strings.Contains(stdout.String(), credential.RefreshToken) || stderr.Len() != 0 {
 		t.Fatalf("unsafe JSON output: stdout=%q stderr=%q", stdout, stderr)
 	}
 	var got map[string]any
@@ -681,6 +777,10 @@ func TestWhoamiRejectsCredentialKeyInGenericMetadata(t *testing.T) {
 		{name: "issuer", apply: func(c *litellmauth.Credential) { c.Issuer = "issuer-" + c.Key }},
 		{name: "subject", apply: func(c *litellmauth.Credential) { c.Subject = "subject-" + c.Key }},
 		{name: "scope", apply: func(c *litellmauth.Credential) { c.Scopes = []string{"scope-" + c.Key} }},
+		{name: "client ID", apply: func(c *litellmauth.Credential) { c.ClientID = "client-" + c.Key }},
+		{name: "token endpoint", apply: func(c *litellmauth.Credential) { c.TokenEndpoint = c.BaseURL + "/" + c.Key }},
+		{name: "revocation endpoint", apply: func(c *litellmauth.Credential) { c.RevocationEndpoint = c.BaseURL + "/" + c.Key }},
+		{name: "resource", apply: func(c *litellmauth.Credential) { c.Resource = c.BaseURL + "/" + c.Key }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			credential := successfulCredential()
@@ -716,6 +816,32 @@ func TestWhoamiJSONRejectsUnsafeMetadata(t *testing.T) {
 				t.Fatalf("execute() error = %v; stdout = %q; stderr = %q", err, stdout, stderr)
 			}
 		})
+	}
+}
+
+func TestWhoamiRejectsRefreshSecretsInMetadata(t *testing.T) {
+	for _, apply := range []func(*litellmauth.Credential){
+		func(c *litellmauth.Credential) { c.UserID = "user-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.TeamAlias = "team-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.Issuer = "issuer-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.Scopes = []string{"scope-" + c.RefreshToken} },
+		func(c *litellmauth.Credential) { c.AttributionMetadata = map[string]any{c.RefreshToken: "safe"} },
+		func(c *litellmauth.Credential) { c.AttributionMetadata = map[string]any{"field": c.RefreshToken} },
+		func(c *litellmauth.Credential) { c.ClientID = "client-" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.TokenEndpoint = c.BaseURL + "/" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.RevocationEndpoint = c.BaseURL + "/" + c.RefreshToken },
+		func(c *litellmauth.Credential) { c.Resource = c.BaseURL + "/" + c.RefreshToken },
+	} {
+		for _, args := range [][]string{{"whoami"}, {"whoami", "--json"}} {
+			credential := successfulCredential()
+			credential.RefreshToken = "refresh-secret"
+			apply(&credential)
+			deps, stdout, stderr := testDependencies(&fakeStore{credential: credential})
+			if err := execute(context.Background(), args, deps); !errors.Is(err, litellmauth.ErrProtocol) ||
+				stdout.Len() != 0 || strings.Contains(stderr.String(), credential.RefreshToken) {
+				t.Errorf("%v error = %v; stdout = %q; stderr = %q", args, err, stdout, stderr)
+			}
+		}
 	}
 }
 

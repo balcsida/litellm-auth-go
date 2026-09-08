@@ -28,6 +28,9 @@ const defaultBaseURL = "http://localhost:4000"
 
 type authClient interface {
 	Authenticate(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
+	AuthenticatePKCE(context.Context, litellmauth.PKCEOptions) (litellmauth.Credential, error)
+	RefreshPKCE(context.Context, litellmauth.Credential) (litellmauth.Credential, error)
+	RevokePKCE(context.Context, litellmauth.Credential) error
 }
 
 type credentialStore interface {
@@ -123,6 +126,7 @@ func newRoot(deps dependencies) *cobra.Command {
 
 func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 	var noBrowser bool
+	var pkce bool
 	var team string
 	command := &cobra.Command{
 		Use:   "login",
@@ -140,6 +144,9 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(command.Context(), global.timeout)
 			defer cancel()
+			if pkce {
+				return pkceLogin(ctx, client, store, deps, noBrowser)
+			}
 			options := litellmauth.AuthenticateOptions{
 				TeamID: team,
 				OnSession: func(_ context.Context, session litellmauth.Session) error {
@@ -179,19 +186,65 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&noBrowser, "no-browser", false, "do not open a browser")
+	command.Flags().BoolVar(&pkce, "pkce", false, "use the proxy's OAuth authorization code + PKCE flow (LiteLLM >= 1.99); the team is picked on the proxy's consent page")
 	command.Flags().StringVar(&team, "team", "", "LiteLLM team ID")
+	command.MarkFlagsMutuallyExclusive("pkce", "team")
 	return command
+}
+
+// pkceLogin drives the proxy-hosted authorization code + PKCE flow. The team
+// is chosen on the proxy's consent page, so there is no local picker.
+func pkceLogin(ctx context.Context, client authClient, store credentialStore, deps dependencies, noBrowser bool) error {
+	credential, err := client.AuthenticatePKCE(ctx, litellmauth.PKCEOptions{
+		OnSession: func(_ context.Context, session litellmauth.PKCESession) error {
+			fmt.Fprintf(deps.stdout, "Open this URL to sign in: %s\n", safe(session.AuthorizeURL.String()))
+			if noBrowser {
+				return nil
+			}
+			if err := deps.openBrowser(session.AuthorizeURL.String()); err != nil {
+				fmt.Fprintln(deps.stderr, "Browser could not be opened; continue manually with the URL above.")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return err
+	}
+	var output bytes.Buffer
+	if err := printCredential(&output, "Authenticated", credential, deps.now()); err != nil {
+		return err
+	}
+	if err := store.Save(ctx, credential); err != nil {
+		return err
+	}
+	_, err = deps.stdout.Write(output.Bytes())
+	return err
 }
 
 func newLogoutCommand(global *globalOptions, deps dependencies) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
-		Short: "Delete the stored credential",
+		Short: "Revoke PKCE access and delete the stored credential",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			store, err := deps.newStore(global.tokenFile)
 			if err != nil {
 				return err
+			}
+			credential, err := store.Load(command.Context(), nil)
+			if err != nil && !errors.Is(err, litellmauth.ErrNoCredential) {
+				return err
+			}
+			if err == nil && credential.AuthMethod == litellmauth.AuthMethodPKCE {
+				client, err := deps.newClient(credential.BaseURL, global.timeout, global.allowInsecureHTTP)
+				if err != nil {
+					return err
+				}
+				ctx, cancel := context.WithTimeout(command.Context(), global.timeout)
+				defer cancel()
+				if err := client.RevokePKCE(ctx, credential); err != nil {
+					return err
+				}
 			}
 			if err := store.Delete(command.Context()); err != nil {
 				return err
@@ -422,12 +475,15 @@ func credentialSafeForOutput(credential litellmauth.Credential) bool {
 		return false
 	}
 	containsKey := func(value string) bool {
-		return strings.Contains(value, credential.Key)
+		return strings.Contains(value, credential.Key) ||
+			(credential.RefreshToken != "" && strings.Contains(value, credential.RefreshToken))
 	}
 	if containsKey(credential.BaseURL) || containsKey(credential.UserID) ||
 		containsKey(credential.TeamID) || containsKey(credential.TeamAlias) ||
 		containsKey(string(credential.AuthMethod)) || containsKey(credential.TokenType) ||
-		containsKey(credential.Issuer) || containsKey(credential.Subject) {
+		containsKey(credential.Issuer) || containsKey(credential.Subject) ||
+		containsKey(credential.ClientID) || containsKey(credential.TokenEndpoint) ||
+		containsKey(credential.RevocationEndpoint) || containsKey(credential.Resource) {
 		return false
 	}
 	for _, scope := range credential.Scopes {
