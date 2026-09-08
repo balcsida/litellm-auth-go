@@ -224,12 +224,27 @@ func pkceLogin(ctx context.Context, client authClient, store credentialStore, de
 func newLogoutCommand(global *globalOptions, deps dependencies) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
-		Short: "Delete the stored credential",
+		Short: "Revoke PKCE access and delete the stored credential",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			store, err := deps.newStore(global.tokenFile)
 			if err != nil {
 				return err
+			}
+			credential, err := store.Load(command.Context(), nil)
+			if err != nil && !errors.Is(err, litellmauth.ErrNoCredential) {
+				return err
+			}
+			if err == nil && credential.AuthMethod == litellmauth.AuthMethodPKCE {
+				client, err := deps.newClient(credential.BaseURL, global.timeout, global.allowInsecureHTTP)
+				if err != nil {
+					return err
+				}
+				ctx, cancel := context.WithTimeout(command.Context(), global.timeout)
+				defer cancel()
+				if err := client.RevokePKCE(ctx, credential); err != nil {
+					return err
+				}
 			}
 			if err := store.Delete(command.Context()); err != nil {
 				return err

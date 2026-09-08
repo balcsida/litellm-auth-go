@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -540,6 +541,86 @@ func TestLogoutIsIdempotentAndIgnoresIssuer(t *testing.T) {
 	}
 	if store.deletes != 2 || store.loadBase != nil {
 		t.Fatalf("deletes = %d, load base = %v", store.deletes, store.loadBase)
+	}
+}
+
+func TestLogoutRevokesPKCEBeforeDeleting(t *testing.T) {
+	for _, name := range []string{"success", "unavailable", "rejected", "invalid file", "invalid client"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "token.json")
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if _, err := os.Stat(path); err != nil {
+					t.Errorf("credential removed before revocation: %v", err)
+				}
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				if r.Method != http.MethodPost || r.URL.Path != "/revoke" ||
+					r.Form.Get("token") != "refresh-secret" || r.Form.Get("token_type_hint") != "refresh_token" ||
+					r.Form.Get("client_id") != "client-1" {
+					t.Error("unexpected revocation request")
+				}
+				switch name {
+				case "unavailable":
+					w.WriteHeader(http.StatusServiceUnavailable)
+				case "rejected":
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer server.Close()
+			credential := successfulCredential()
+			credential.BaseURL = server.URL
+			credential.AuthMethod = litellmauth.AuthMethodPKCE
+			credential.ExpiresAt = testNow.Add(time.Hour)
+			credential.RefreshToken = "refresh-secret"
+			credential.ClientID = "client-1"
+			credential.RevocationEndpoint = server.URL + "/revoke"
+			if name == "invalid client" {
+				credential.BaseURL = "http://proxy.example.com"
+			}
+			store, err := tokenstore.NewFileStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Save(context.Background(), credential); err != nil {
+				t.Fatal(err)
+			}
+			if name == "invalid file" {
+				if err := os.WriteFile(path, []byte("invalid JSON"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			deps := defaultDependencies(strings.NewReader(""), &stdout, &stderr)
+			deps.getenv = func(string) string { return "https://ignored.example.com" }
+			args := []string{"--token-file", path, "--base-url", "https://also-ignored.example.com", "logout"}
+			err = execute(context.Background(), args, deps)
+			if name == "success" {
+				if err != nil || requests != 1 {
+					t.Fatalf("logout error = %v, revocations = %d", err, requests)
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("credential remains after revocation: %v", err)
+				}
+				if err := execute(context.Background(), args, deps); err != nil || requests != 1 {
+					t.Fatalf("repeated logout error = %v, revocations = %d", err, requests)
+				}
+				return
+			}
+			if err == nil || stdout.Len() != 0 {
+				t.Fatalf("failed logout error = %v, stdout = %q", err, &stdout)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("failed logout changed credential: %v", err)
+			}
+		})
 	}
 }
 
