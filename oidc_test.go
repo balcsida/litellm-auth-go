@@ -35,6 +35,7 @@ type fakeIdP struct {
 	subject       string
 	issuer        string
 	audience      any
+	expiresAt     time.Time
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -46,6 +47,7 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	idp.srv = httptest.NewTLSServer(mux)
 	idp.issuer = idp.srv.URL + "/oidc/2"
 	idp.audience = "tescode-client"
+	idp.expiresAt = time.Now().Add(time.Hour).Truncate(time.Second)
 	t.Cleanup(idp.srv.Close)
 	return idp
 }
@@ -142,7 +144,7 @@ func (idp *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 	}
 	body := map[string]any{
 		"access_token": "opaque-access-" + strings.Repeat("a", idp.tokenCalls), "token_type": "Bearer", "expires_in": 3600,
-		"id_token": idp.idToken(nonce, time.Now().Add(time.Hour)),
+		"id_token": idp.idToken(nonce, idp.expiresAt),
 	}
 	if r.PostForm.Get("grant_type") == "authorization_code" || idp.rotateRefresh {
 		refresh := "rt-" + strings.Repeat("r", idp.tokenCalls)
@@ -340,6 +342,39 @@ func TestOIDCRefreshRefusesForeignIssuer(t *testing.T) {
 	credential := Credential{AuthMethod: AuthMethodOIDC, RefreshToken: "rt", Issuer: "https://other-idp.example/oidc/2", Subject: "NH1"}
 	if _, err := idp.client(t).RefreshOIDC(context.Background(), idp.provider(), credential); !errors.Is(err, ErrOriginMismatch) {
 		t.Fatalf("err = %v; want ErrOriginMismatch", err)
+	}
+}
+
+func TestOIDCRejectsExpiredIDTokens(t *testing.T) {
+	for _, operation := range []string{"login", "refresh"} {
+		for _, offset := range []time.Duration{-time.Second, 0, time.Second} {
+			t.Run(operation+"/"+offset.String(), func(t *testing.T) {
+				idp := newFakeIdP(t)
+				client := idp.client(t)
+				options := OIDCOptions{Provider: idp.provider(), OnSession: idp.browse}
+				var credential Credential
+				var err error
+				if operation == "refresh" {
+					credential, err = client.AuthenticateOIDC(context.Background(), options)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				client.now = func() time.Time { return idp.expiresAt.Add(offset) }
+				if operation == "refresh" {
+					_, err = client.RefreshOIDC(context.Background(), idp.provider(), credential)
+				} else {
+					_, err = client.AuthenticateOIDC(context.Background(), options)
+				}
+				if offset < 0 {
+					if err != nil {
+						t.Fatalf("unexpired token rejected: %v", err)
+					}
+				} else if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "expired") {
+					t.Fatalf("err = %v; want expired token protocol error", err)
+				}
+			})
+		}
 	}
 }
 
