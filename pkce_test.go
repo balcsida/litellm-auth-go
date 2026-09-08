@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -386,13 +387,18 @@ func TestPKCEWaitHonoursCancellation(t *testing.T) {
 
 func TestPKCERedirectPortsAreHonoured(t *testing.T) {
 	proxy := newFakePKCEProxy(t)
-	// Port 1 needs root and fails; the flow must move on to the OS-assigned 0.
-	session, err := proxy.client(t).StartPKCE(context.Background(), PKCEOptions{RedirectPorts: []int{1, 0}})
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+	session, err := proxy.client(t).StartPKCE(context.Background(), PKCEOptions{RedirectPorts: []int{port, 0}})
 	if err != nil {
 		t.Fatalf("StartPKCE: %v", err)
 	}
 	defer session.Close()
-	if !strings.HasPrefix(session.RedirectURI, "http://127.0.0.1:") || strings.HasPrefix(session.RedirectURI, "http://127.0.0.1:1/") {
+	if !strings.HasPrefix(session.RedirectURI, "http://127.0.0.1:") || session.RedirectURI == "http://"+busy.Addr().String()+"/callback" {
 		t.Fatalf("RedirectURI = %s", session.RedirectURI)
 	}
 }
