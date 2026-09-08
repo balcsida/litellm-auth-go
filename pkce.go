@@ -23,10 +23,6 @@ import (
 // authorization-code + PKCE flow (LiteLLM >= 1.99, `lite login --pkce`).
 const AuthMethodPKCE AuthMethod = "litellm-pkce"
 
-// pkceDiscoveryPath is the versioned discovery document a proxy publishes when
-// it supports native CLI clients.
-const pkceDiscoveryPath = "/.well-known/litellm-cli-auth"
-
 // pkceClientName is the client_name sent at dynamic client registration.
 const pkceClientName = "litellm-auth-go"
 
