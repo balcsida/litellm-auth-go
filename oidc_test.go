@@ -33,6 +33,8 @@ type fakeIdP struct {
 	rotateRefresh bool
 	disabledUser  bool
 	subject       string
+	issuer        string
+	audience      any
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -42,6 +44,8 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	mux.HandleFunc("/oidc/2/auth", idp.authorize)
 	mux.HandleFunc("/oidc/2/token", idp.token)
 	idp.srv = httptest.NewTLSServer(mux)
+	idp.issuer = idp.srv.URL + "/oidc/2"
+	idp.audience = "tescode-client"
 	t.Cleanup(idp.srv.Close)
 	return idp
 }
@@ -61,7 +65,7 @@ func (idp *fakeIdP) client(t *testing.T) *Client {
 
 func (idp *fakeIdP) idToken(nonce string, exp time.Time) string {
 	payload, _ := json.Marshal(map[string]any{
-		"iss": idp.srv.URL + "/oidc/2", "aud": "tescode-client", "sub": idp.subject,
+		"iss": idp.issuer, "aud": idp.audience, "sub": idp.subject,
 		"exp": exp.Unix(), "iat": time.Now().Unix(), "nonce": nonce,
 	})
 	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"k1"}`)) + "." +
@@ -302,6 +306,32 @@ func TestOIDCRefreshReportsDisabledUserAsRejected(t *testing.T) {
 	idp.disabledUser = true // OneLogin: invalid_request + "User is suspended. Access is unauthorized"
 	if _, err := client.RefreshOIDC(context.Background(), idp.provider(), credential); !errors.Is(err, ErrRefreshRejected) {
 		t.Fatalf("err = %v; want ErrRefreshRejected for a disabled user", err)
+	}
+}
+
+func TestOIDCRefreshValidatesTokenIdentity(t *testing.T) {
+	for _, claim := range []string{"issuer", "audience", "subject"} {
+		t.Run(claim, func(t *testing.T) {
+			idp := newFakeIdP(t)
+			client := idp.client(t)
+			credential, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: idp.provider(), OnSession: idp.browse})
+			if err != nil {
+				t.Fatal(err)
+			}
+			idp.mu.Lock()
+			switch claim {
+			case "issuer":
+				idp.issuer = "https://other-idp.example/oidc/2"
+			case "audience":
+				idp.audience = "another-client"
+			case "subject":
+				idp.subject = "another-user"
+			}
+			idp.mu.Unlock()
+			if _, err := client.RefreshOIDC(context.Background(), idp.provider(), credential); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), claim) {
+				t.Fatalf("err = %v; want protocol error for changed %s", err, claim)
+			}
+		})
 	}
 }
 

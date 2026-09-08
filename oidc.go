@@ -176,6 +176,12 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	if err != nil {
 		return Credential{}, err
 	}
+	if claims.Issuer != strings.TrimRight(provider.Issuer, "/") {
+		return Credential{}, protocolError("refresh: id_token issuer mismatch")
+	}
+	if !claims.hasAudience(provider.ClientID) {
+		return Credential{}, protocolError("refresh: id_token audience mismatch")
+	}
 	if credential.Subject != "" && claims.Subject != credential.Subject {
 		return Credential{}, protocolError("refresh: id_token subject changed")
 	}
