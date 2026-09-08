@@ -172,7 +172,7 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	}
 	// An IdP refresh does not repeat the login nonce; only the code exchange
 	// is nonce-checked. The subject must not change across a refresh, though.
-	claims, err := oidcClaims(token.IDToken)
+	claims, err := c.oidcClaims(token.IDToken)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -205,7 +205,7 @@ func (c *Client) redeemOIDCCode(ctx context.Context, session *PKCESession, code 
 	if err != nil {
 		return Credential{}, err
 	}
-	claims, err := oidcClaims(token.IDToken)
+	claims, err := c.oidcClaims(token.IDToken)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -292,7 +292,7 @@ func (claims oidcIDTokenClaims) expiry() time.Time {
 	return time.Unix(seconds, 0)
 }
 
-func oidcClaims(idToken string) (oidcIDTokenClaims, error) {
+func (c *Client) oidcClaims(idToken string) (oidcIDTokenClaims, error) {
 	parts := strings.Split(idToken, ".")
 	if len(parts) != 3 {
 		return oidcIDTokenClaims{}, protocolError("id_token is not a JWT")
@@ -307,6 +307,9 @@ func oidcClaims(idToken string) (oidcIDTokenClaims, error) {
 	}
 	if claims.Subject == "" || containsControl(claims.Subject) || claims.expiry().IsZero() {
 		return oidcIDTokenClaims{}, protocolError("id_token lacks sub or exp")
+	}
+	if !claims.expiry().After(c.now()) {
+		return oidcIDTokenClaims{}, protocolError("id_token is expired")
 	}
 	return claims, nil
 }
