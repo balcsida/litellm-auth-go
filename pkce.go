@@ -187,7 +187,7 @@ func (c *Client) StartPKCE(ctx context.Context, options PKCEOptions) (*PKCESessi
 	}
 
 	authorize, _ := url.Parse(contract.AuthorizationEndpoint)
-	query := url.Values{}
+	query := authorize.Query()
 	query.Set("response_type", "code")
 	query.Set("client_id", clientID)
 	query.Set("redirect_uri", redirectURI)
