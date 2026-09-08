@@ -251,7 +251,7 @@ func (c *Client) postOIDCToken(ctx context.Context, endpoint string, form url.Va
 		if strings.Contains(strings.ToLower(oauthErrorDescription(body)), "unauthorized") {
 			return oidcTokenResponse{}, ErrRefreshRejected
 		}
-		return oidcTokenResponse{}, pkceHTTPError(op, response, body)
+		return oidcTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"))
 	}
 	var token oidcTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil || token.IDToken == "" ||
