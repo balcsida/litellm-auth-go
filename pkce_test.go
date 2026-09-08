@@ -70,7 +70,7 @@ func (p *fakePKCEProxy) discovery(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"contract_version":                           1,
 		"issuer":                                     p.srv.URL,
-		"authorization_endpoint":                     p.srv.URL + "/authorize",
+		"authorization_endpoint":                     p.srv.URL + "/authorize?tenant=example&response_type=token",
 		"token_endpoint":                             tokenEndpoint,
 		"registration_endpoint":                      p.srv.URL + "/register",
 		"revocation_endpoint":                        p.srv.URL + "/revoke",
@@ -231,6 +231,9 @@ func TestPKCEAuthenticateRoundTrip(t *testing.T) {
 		t.Fatalf("Validate: %v", err)
 	}
 	q := seen.AuthorizeURL.Query()
+	if q.Get("tenant") != "example" || q.Get("response_type") != "code" {
+		t.Fatalf("authorization query = %v; want tenant preserved and response_type replaced", q)
+	}
 	if q.Get("code_challenge_method") != "S256" || q.Get("resource") != proxy.srv.URL || !strings.HasPrefix(seen.RedirectURI, "http://127.0.0.1:") {
 		t.Fatalf("authorize URL = %s", seen.AuthorizeURL)
 	}
