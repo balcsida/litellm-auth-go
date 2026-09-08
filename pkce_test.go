@@ -478,3 +478,27 @@ func TestPKCECredentialJSONRoundTripKeepsRefreshMetadata(t *testing.T) {
 		t.Fatalf("control characters in refresh_token must be rejected, got %v", err)
 	}
 }
+
+func TestPKCETokenRejectsInvalidRefreshMetadata(t *testing.T) {
+	for name, fields := range map[string]map[string]any{
+		"refresh space":   {"refresh_token": "refresh token"},
+		"refresh control": {"refresh_token": "refresh\ntoken"},
+		"token type":      {"token_type": "bad scheme"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := map[string]any{"access_token": "access-secret", "refresh_token": "refresh-secret", "expires_in": 3600, "token_type": "Bearer"}
+				for key, value := range fields {
+					body[key] = value
+				}
+				_ = json.NewEncoder(w).Encode(body)
+			}))
+			defer server.Close()
+			client, _ := New(server.URL)
+			_, err := client.postPKCEToken(context.Background(), server.URL, url.Values{"grant_type": {"authorization_code"}}, "token")
+			if !errors.Is(err, ErrProtocol) {
+				t.Fatalf("got %v; want ErrProtocol", err)
+			}
+		})
+	}
+}

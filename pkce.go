@@ -442,6 +442,7 @@ func (c *Client) postPKCEToken(ctx context.Context, endpoint string, form url.Va
 	var token pkceTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil ||
 		token.AccessToken == "" || token.RefreshToken == "" || token.ExpiresIn <= 0 ||
+		containsKeySpaceOrControl(token.RefreshToken) || (token.TokenType != "" && !validHTTPToken(token.TokenType)) ||
 		containsKeySpaceOrControl(token.AccessToken) || containsControl(token.UserID) || containsControl(token.TeamID) {
 		return pkceTokenResponse{}, protocolError(op + ": malformed token response")
 	}
