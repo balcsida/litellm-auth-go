@@ -380,7 +380,7 @@ func (c *Client) registerPKCEClient(ctx context.Context, contract PKCEContract, 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
-		return "", pkceHTTPError("register", response)
+		return "", pkceHTTPError("register", response, nil)
 	}
 	body, err := readPKCEBody(response, "register")
 	if err != nil {
@@ -437,7 +437,7 @@ func (c *Client) postPKCEToken(ctx context.Context, endpoint string, form url.Va
 		if oauthErrorCode(body) == "invalid_grant" {
 			return pkceTokenResponse{}, ErrRefreshRejected
 		}
-		return pkceTokenResponse{}, pkceHTTPError(op, response, body)
+		return pkceTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"))
 	}
 	var token pkceTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil ||
@@ -544,7 +544,7 @@ func oauthErrorCode(body []byte) string {
 	return decoded.Error
 }
 
-func pkceHTTPError(op string, response *http.Response, body ...[]byte) error {
+func pkceHTTPError(op string, response *http.Response, body []byte, secrets ...string) error {
 	detail := ""
 	if len(body) > 0 {
 		var decoded struct {
@@ -552,7 +552,7 @@ func pkceHTTPError(op string, response *http.Response, body ...[]byte) error {
 			ErrorDescription string `json:"error_description"`
 			Detail           string `json:"detail"`
 		}
-		if json.Unmarshal(body[0], &decoded) == nil {
+		if json.Unmarshal(body, &decoded) == nil {
 			detail = strings.TrimSpace(decoded.ErrorDescription)
 			if detail == "" {
 				detail = decoded.Error
@@ -565,7 +565,7 @@ func pkceHTTPError(op string, response *http.Response, body ...[]byte) error {
 	return &HTTPError{
 		Op:         op,
 		StatusCode: response.StatusCode,
-		Detail:     safeHTTPErrorDetail(detail),
+		Detail:     safeHTTPErrorDetail(detail, secrets...),
 		Retryable:  response.StatusCode == http.StatusTooManyRequests,
 	}
 }

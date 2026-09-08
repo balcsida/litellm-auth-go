@@ -502,3 +502,33 @@ func TestPKCETokenRejectsInvalidRefreshMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestOAuthTokenErrorsRedactSubmittedSecrets(t *testing.T) {
+	for _, oidc := range []bool{false, true} {
+		for _, field := range []string{"error_description", "detail", "error"} {
+			t.Run(map[bool]string{false: "pkce", true: "oidc"}[oidc]+"/"+field, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_ = r.ParseForm()
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]string{field: "rejected " + r.Form.Get("code") + " " + r.Form.Get("code_verifier") + " " + r.Form.Get("refresh_token")})
+				}))
+				defer server.Close()
+				client, _ := New(server.URL)
+				form := url.Values{"code": {"code-secret"}, "code_verifier": {"verifier-secret"}, "refresh_token": {"refresh-secret"}}
+				var err error
+				if oidc {
+					_, err = client.postOIDCToken(context.Background(), server.URL, form, "token")
+				} else {
+					_, err = client.postPKCEToken(context.Background(), server.URL, form, "token")
+				}
+				var httpErr *HTTPError
+				if !errors.As(err, &httpErr) {
+					t.Fatalf("got %v; want HTTPError", err)
+				}
+				if httpErr.Detail != "rejected [redacted] [redacted] [redacted]" {
+					t.Fatalf("unsafe detail: %q", httpErr.Detail)
+				}
+			})
+		}
+	}
+}
