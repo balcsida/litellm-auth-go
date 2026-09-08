@@ -338,6 +338,38 @@ func TestOIDCRefreshReportsDisabledUserAsRejected(t *testing.T) {
 	}
 }
 
+func TestOIDCTokenErrorsDistinguishLoginFromRefresh(t *testing.T) {
+	for _, code := range []string{"invalid_grant", "invalid_token", "access_denied", "invalid_request"} {
+		t.Run(code, func(t *testing.T) {
+			description := "provider rejected request"
+			if code == "invalid_request" {
+				description = "User is suspended. Access is unauthorized"
+			}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": description})
+			}))
+			defer server.Close()
+			client, err := New("https://proxy.example.com", WithHTTPClient(server.Client()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider := OIDCProvider{Issuer: server.URL, ClientID: "client", Scope: "openid", TokenURL: server.URL}
+			_, err = client.redeemOIDCCode(context.Background(), &PKCESession{provider: &provider}, "code")
+			var httpErr *HTTPError
+			if errors.Is(err, ErrRefreshRejected) || !errors.As(err, &httpErr) {
+				t.Errorf("login err = %v; want HTTPError without ErrRefreshRejected", err)
+			} else if httpErr.StatusCode != http.StatusBadRequest || httpErr.Detail != description {
+				t.Errorf("login HTTPError status=%d detail=%q", httpErr.StatusCode, httpErr.Detail)
+			}
+			_, err = client.RefreshOIDC(context.Background(), provider, Credential{AuthMethod: AuthMethodOIDC, RefreshToken: "refresh"})
+			if !errors.Is(err, ErrRefreshRejected) {
+				t.Errorf("refresh err = %v; want ErrRefreshRejected", err)
+			}
+		})
+	}
+}
+
 func TestOIDCRefreshValidatesTokenIdentity(t *testing.T) {
 	for _, claim := range []string{"issuer", "audience", "subject"} {
 		t.Run(claim, func(t *testing.T) {

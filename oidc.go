@@ -242,14 +242,16 @@ func (c *Client) postOIDCToken(ctx context.Context, endpoint string, form url.Va
 		return oidcTokenResponse{}, err
 	}
 	if response.StatusCode != http.StatusOK {
-		switch oauthErrorCode(body) {
-		case "invalid_grant", "invalid_token", "access_denied":
-			return oidcTokenResponse{}, ErrRefreshRejected
-		}
-		// OneLogin reports a disabled or locked user as invalid_request with
-		// an "Access is unauthorized" description; that is a dead session too.
-		if strings.Contains(strings.ToLower(oauthErrorDescription(body)), "unauthorized") {
-			return oidcTokenResponse{}, ErrRefreshRejected
+		if op == "refresh" {
+			switch oauthErrorCode(body) {
+			case "invalid_grant", "invalid_token", "access_denied":
+				return oidcTokenResponse{}, ErrRefreshRejected
+			}
+			// OneLogin reports a disabled or locked user as invalid_request with
+			// an "Access is unauthorized" description; that is a dead session too.
+			if strings.Contains(strings.ToLower(oauthErrorDescription(body)), "unauthorized") {
+				return oidcTokenResponse{}, ErrRefreshRejected
+			}
 		}
 		return oidcTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"))
 	}
