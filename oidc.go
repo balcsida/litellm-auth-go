@@ -108,7 +108,7 @@ func (c *Client) StartOIDC(ctx context.Context, options OIDCOptions) (*PKCESessi
 	}
 
 	authorize, _ := url.Parse(options.Provider.authorizeURL())
-	query := url.Values{}
+	query := authorize.Query()
 	query.Set("response_type", "code")
 	query.Set("client_id", options.Provider.ClientID)
 	query.Set("redirect_uri", redirectURI)
