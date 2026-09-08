@@ -434,7 +434,7 @@ func (c *Client) postPKCEToken(ctx context.Context, endpoint string, form url.Va
 		return pkceTokenResponse{}, err
 	}
 	if response.StatusCode != http.StatusOK {
-		if oauthErrorCode(body) == "invalid_grant" {
+		if op == "refresh" && oauthErrorCode(body) == "invalid_grant" {
 			return pkceTokenResponse{}, ErrRefreshRejected
 		}
 		return pkceTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"))

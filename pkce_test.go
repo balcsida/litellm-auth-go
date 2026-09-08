@@ -535,3 +535,24 @@ func TestOAuthTokenErrorsRedactSubmittedSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestPKCEInvalidGrantClassification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer server.Close()
+	client, _ := New(server.URL)
+	for _, op := range []string{"token", "refresh"} {
+		_, err := client.postPKCEToken(context.Background(), server.URL, nil, op)
+		if errors.Is(err, ErrRefreshRejected) != (op == "refresh") {
+			t.Fatalf("%s: unexpected refresh rejection: %v", op, err)
+		}
+		if op == "token" {
+			var httpErr *HTTPError
+			if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("code exchange got %v; want HTTPError 400", err)
+			}
+		}
+	}
+}
