@@ -35,6 +35,7 @@ type fakeIdP struct {
 	subject       string
 	issuer        string
 	audience      any
+	azp           string
 	expiresAt     time.Time
 }
 
@@ -66,10 +67,14 @@ func (idp *fakeIdP) client(t *testing.T) *Client {
 }
 
 func (idp *fakeIdP) idToken(nonce string, exp time.Time) string {
-	payload, _ := json.Marshal(map[string]any{
+	claims := map[string]any{
 		"iss": idp.issuer, "aud": idp.audience, "sub": idp.subject,
 		"exp": exp.Unix(), "iat": time.Now().Unix(), "nonce": nonce,
-	})
+	}
+	if idp.azp != "" {
+		claims["azp"] = idp.azp
+	}
+	payload, _ := json.Marshal(claims)
 	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","kid":"k1"}`)) + "." +
 		base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
@@ -483,4 +488,38 @@ func TestOIDCComparesIssuersExactly(t *testing.T) {
 			t.Fatalf("RefreshOIDC err = %v; want issuer mismatch", err)
 		}
 	})
+}
+
+func TestOIDCValidatesAuthorizedParty(t *testing.T) {
+	const client = "tescode-client"
+	for _, test := range []struct {
+		name     string
+		audience any
+		azp      string
+		accept   bool
+	}{
+		{"multiple audiences without azp", []string{client, "other-api"}, "", false},
+		{"azp names another client", client, "another-client", false},
+		{"multiple audiences with azp", []string{client, "other-api"}, client, true},
+		{"single audience with azp", client, client, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			idp := newFakeIdP(t)
+			idp.audience, idp.azp = test.audience, test.azp
+			c := idp.client(t)
+			credential, err := c.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: idp.provider(), OnSession: idp.browse})
+			if test.accept {
+				if err != nil {
+					t.Fatalf("AuthenticateOIDC: %v", err)
+				}
+				if _, err := c.RefreshOIDC(context.Background(), idp.provider(), credential); err != nil {
+					t.Fatalf("RefreshOIDC: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "audience mismatch") {
+				t.Fatalf("err = %v; want audience mismatch", err)
+			}
+		})
+	}
 }

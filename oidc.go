@@ -179,7 +179,7 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	if claims.Issuer != provider.Issuer {
 		return Credential{}, protocolError("refresh: id_token issuer mismatch")
 	}
-	if !claims.hasAudience(provider.ClientID) {
+	if !claims.validAudience(provider.ClientID) {
 		return Credential{}, protocolError("refresh: id_token audience mismatch")
 	}
 	if credential.Subject != "" && claims.Subject != credential.Subject {
@@ -217,7 +217,7 @@ func (c *Client) redeemOIDCCode(ctx context.Context, session *PKCESession, code 
 	if claims.Issuer != provider.Issuer {
 		return Credential{}, protocolError("token: id_token issuer mismatch")
 	}
-	if !claims.hasAudience(provider.ClientID) {
+	if !claims.validAudience(provider.ClientID) {
 		return Credential{}, protocolError("token: id_token audience mismatch")
 	}
 	return c.oidcCredential(token, claims, provider), nil
@@ -267,23 +267,31 @@ func (c *Client) postOIDCToken(ctx context.Context, endpoint string, form url.Va
 // signature is NOT verified here: LiteLLM is the verifier (JWKS, iss, aud);
 // the client needs exp for freshness and sub/nonce/iss/aud for sanity.
 type oidcIDTokenClaims struct {
-	Issuer   string          `json:"iss"`
-	Subject  string          `json:"sub"`
-	Audience json.RawMessage `json:"aud"`
-	Nonce    string          `json:"nonce"`
-	Exp      json.Number     `json:"exp"`
+	Issuer          string          `json:"iss"`
+	Subject         string          `json:"sub"`
+	Audience        json.RawMessage `json:"aud"`
+	AuthorizedParty string          `json:"azp"`
+	Nonce           string          `json:"nonce"`
+	Exp             json.Number     `json:"exp"`
 }
 
-func (claims oidcIDTokenClaims) hasAudience(clientID string) bool {
+// validAudience implements OIDC Core 3.1.3.7 (3)-(5): aud must contain the
+// client ID, a multi-valued aud requires azp, and azp must be the client ID.
+func (claims oidcIDTokenClaims) validAudience(clientID string) bool {
+	var audiences []string
 	var single string
 	if json.Unmarshal(claims.Audience, &single) == nil {
-		return single == clientID
+		audiences = []string{single}
+	} else if json.Unmarshal(claims.Audience, &audiences) != nil {
+		return false
 	}
-	var many []string
-	if json.Unmarshal(claims.Audience, &many) == nil {
-		return containsString(many, clientID)
+	if !containsString(audiences, clientID) {
+		return false
 	}
-	return false
+	if len(audiences) > 1 && claims.AuthorizedParty == "" {
+		return false
+	}
+	return claims.AuthorizedParty == "" || claims.AuthorizedParty == clientID
 }
 
 func (claims oidcIDTokenClaims) expiry() time.Time {
