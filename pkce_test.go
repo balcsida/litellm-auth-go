@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -493,9 +494,10 @@ func TestPKCECredentialJSONRoundTripKeepsRefreshMetadata(t *testing.T) {
 
 func TestPKCETokenRejectsInvalidRefreshMetadata(t *testing.T) {
 	for name, fields := range map[string]map[string]any{
-		"refresh space":   {"refresh_token": "refresh token"},
-		"refresh control": {"refresh_token": "refresh\ntoken"},
-		"token type":      {"token_type": "bad scheme"},
+		"refresh space":    {"refresh_token": "refresh token"},
+		"refresh control":  {"refresh_token": "refresh\ntoken"},
+		"token type":       {"token_type": "bad scheme"},
+		"expires overflow": {"expires_in": int64(math.MaxInt64/int64(time.Second)) + 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
