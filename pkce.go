@@ -153,6 +153,11 @@ func (c *Client) DiscoverPKCE(ctx context.Context) (PKCEContract, error) {
 			return PKCEContract{}, protocolError("discovery: " + name + " is outside the proxy origin")
 		}
 	}
+	// pkceCredential labels the credential with c.baseURL, so the issuer must
+	// name this exact proxy, not another path on the same origin.
+	if issuer, err := normalizeBaseURL(contract.Issuer, c.allowInsecureHTTP); err != nil || issuer.String() != c.baseURL {
+		return PKCEContract{}, protocolError("discovery: issuer does not match the proxy base URL")
+	}
 	return contract, nil
 }
 

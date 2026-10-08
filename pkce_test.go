@@ -36,6 +36,8 @@ type fakePKCEProxy struct {
 	teamID        string
 	// foreignEndpoint, when set, is published as the token_endpoint.
 	foreignEndpoint string
+	// issuerPath, when set, is appended to the published issuer.
+	issuerPath string
 }
 
 func newFakePKCEProxy(t *testing.T) *fakePKCEProxy {
@@ -69,7 +71,7 @@ func (p *fakePKCEProxy) discovery(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"contract_version":                           1,
-		"issuer":                                     p.srv.URL,
+		"issuer":                                     p.srv.URL + p.issuerPath,
 		"authorization_endpoint":                     p.srv.URL + "/authorize?tenant=example&response_type=token",
 		"token_endpoint":                             tokenEndpoint,
 		"registration_endpoint":                      p.srv.URL + "/register",
@@ -290,6 +292,13 @@ func TestPKCEDiscoveryFailsClosed(t *testing.T) {
 		proxy.foreignEndpoint = "https://evil.example/token"
 		if _, err := proxy.client(t).DiscoverPKCE(context.Background()); !errors.Is(err, ErrProtocol) {
 			t.Fatalf("err = %v; want ErrProtocol for an off-origin endpoint", err)
+		}
+	})
+	t.Run("issuer on another path is refused", func(t *testing.T) {
+		proxy := newFakePKCEProxy(t)
+		proxy.issuerPath = "/other"
+		if _, err := proxy.client(t).DiscoverPKCE(context.Background()); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("err = %v; want ErrProtocol for an issuer that is not the proxy base URL", err)
 		}
 	})
 	t.Run("redirecting discovery is refused", func(t *testing.T) {
