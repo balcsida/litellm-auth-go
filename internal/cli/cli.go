@@ -232,18 +232,16 @@ func newLogoutCommand(global *globalOptions, deps dependencies) *cobra.Command {
 				return err
 			}
 			credential, err := store.Load(command.Context(), nil)
-			if err != nil && !errors.Is(err, litellmauth.ErrNoCredential) {
-				return err
-			}
 			if err == nil && credential.AuthMethod == litellmauth.AuthMethodPKCE {
 				client, err := deps.newClient(credential.BaseURL, global.timeout, global.allowInsecureHTTP)
 				if err != nil {
-					return err
-				}
-				ctx, cancel := context.WithTimeout(command.Context(), global.timeout)
-				defer cancel()
-				if err := client.RevokePKCE(ctx, credential); err != nil {
-					return err
+					fmt.Fprintln(deps.stderr, "Server-side token was not revoked: client could not be created.")
+				} else {
+					ctx, cancel := context.WithTimeout(command.Context(), global.timeout)
+					defer cancel()
+					if err := client.RevokePKCE(ctx, credential); err != nil {
+						return err
+					}
 				}
 			}
 			if err := store.Delete(command.Context()); err != nil {

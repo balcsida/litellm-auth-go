@@ -601,6 +601,18 @@ func TestLogoutRevokesPKCEBeforeDeleting(t *testing.T) {
 			deps.getenv = func(string) string { return "https://ignored.example.com" }
 			args := []string{"--token-file", path, "--base-url", "https://also-ignored.example.com", "logout"}
 			err = execute(context.Background(), args, deps)
+			if name == "invalid file" || name == "invalid client" {
+				if err != nil || requests != 0 || stdout.String() != "Logged out.\n" {
+					t.Fatalf("logout error = %v, revocations = %d, stdout = %q", err, requests, &stdout)
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("credential remains after logout: %v", err)
+				}
+				if name == "invalid client" && !strings.Contains(stderr.String(), "not revoked") {
+					t.Fatalf("stderr = %q, want revocation notice", &stderr)
+				}
+				return
+			}
 			if name == "success" {
 				if err != nil || requests != 1 {
 					t.Fatalf("logout error = %v, revocations = %d", err, requests)
