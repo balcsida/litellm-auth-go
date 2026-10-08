@@ -443,3 +443,44 @@ func TestOIDCCredentialFormattingHidesTokens(t *testing.T) {
 		t.Fatalf("%q leaks a token", s)
 	}
 }
+
+func TestOIDCComparesIssuersExactly(t *testing.T) {
+	t.Run("trailing slash is kept", func(t *testing.T) {
+		idp := newFakeIdP(t)
+		idp.issuer += "/"
+		provider := idp.provider()
+		provider.Issuer += "/"
+		client := idp.client(t)
+		credential, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: provider, OnSession: idp.browse})
+		if err != nil {
+			t.Fatalf("AuthenticateOIDC: %v", err)
+		}
+		if credential.Issuer != provider.Issuer {
+			t.Fatalf("credential issuer = %q; want %q", credential.Issuer, provider.Issuer)
+		}
+		if _, err := client.RefreshOIDC(context.Background(), provider, credential); err != nil {
+			t.Fatalf("RefreshOIDC: %v", err)
+		}
+	})
+	t.Run("trailing slash difference is rejected", func(t *testing.T) {
+		idp := newFakeIdP(t)
+		provider := idp.provider()
+		provider.Issuer += "/"
+		client := idp.client(t)
+		_, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: provider, OnSession: idp.browse})
+		if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "issuer mismatch") {
+			t.Fatalf("AuthenticateOIDC err = %v; want issuer mismatch", err)
+		}
+		credential, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: idp.provider(), OnSession: idp.browse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idp.mu.Lock()
+		idp.issuer += "/"
+		idp.mu.Unlock()
+		_, err = client.RefreshOIDC(context.Background(), idp.provider(), credential)
+		if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "issuer mismatch") {
+			t.Fatalf("RefreshOIDC err = %v; want issuer mismatch", err)
+		}
+	})
+}

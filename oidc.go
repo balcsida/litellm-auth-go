@@ -159,7 +159,7 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	if err := provider.validate(); err != nil {
 		return Credential{}, err
 	}
-	if credential.Issuer != "" && credential.Issuer != strings.TrimRight(provider.Issuer, "/") {
+	if credential.Issuer != "" && credential.Issuer != provider.Issuer {
 		return Credential{}, ErrOriginMismatch
 	}
 	form := url.Values{}
@@ -176,7 +176,7 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	if err != nil {
 		return Credential{}, err
 	}
-	if claims.Issuer != strings.TrimRight(provider.Issuer, "/") {
+	if claims.Issuer != provider.Issuer {
 		return Credential{}, protocolError("refresh: id_token issuer mismatch")
 	}
 	if !claims.hasAudience(provider.ClientID) {
@@ -214,7 +214,7 @@ func (c *Client) redeemOIDCCode(ctx context.Context, session *PKCESession, code 
 	if subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(session.nonce)) != 1 {
 		return Credential{}, protocolError("token: id_token nonce mismatch")
 	}
-	if claims.Issuer != strings.TrimRight(provider.Issuer, "/") {
+	if claims.Issuer != provider.Issuer {
 		return Credential{}, protocolError("token: id_token issuer mismatch")
 	}
 	if !claims.hasAudience(provider.ClientID) {
@@ -322,7 +322,7 @@ func (c *Client) oidcCredential(token oidcTokenResponse, claims oidcIDTokenClaim
 		Key:           token.IDToken,
 		AuthMethod:    AuthMethodOIDC,
 		TokenType:     "Bearer",
-		Issuer:        strings.TrimRight(provider.Issuer, "/"),
+		Issuer:        provider.Issuer,
 		Subject:       claims.Subject,
 		Scopes:        strings.Fields(provider.Scope),
 		UserID:        claims.Subject,
