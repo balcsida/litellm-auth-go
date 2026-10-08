@@ -50,6 +50,43 @@ credential, err := client.Authenticate(ctx, litellmauth.AuthenticateOptions{
 })
 ```
 
+### Authorization code + PKCE (LiteLLM >= 1.99)
+
+Proxies that publish `/.well-known/litellm-cli-auth` accept native clients
+through the OAuth 2.1 authorization code flow with PKCE (the flow behind
+`lite login --pkce`). The proxy is the authorization server: the client
+registers itself dynamically, the user signs in and picks a team on the
+proxy's consent page, and the proxy mints the same per-user credential
+`lite login` mints, together with a rotating refresh token.
+
+```go
+credential, err := client.AuthenticatePKCE(ctx, litellmauth.PKCEOptions{
+	OnSession: func(_ context.Context, session litellmauth.PKCESession) error {
+		return browser.OpenURL(session.AuthorizeURL.String())
+	},
+})
+```
+
+Before it expires, renew the credential without a browser and persist the
+result; the proxy rotates the refresh token on every renewal:
+
+```go
+renewed, err := client.RefreshPKCE(ctx, stored)
+if errors.Is(err, litellmauth.ErrRefreshRejected) {
+	// revoked or replaced by a newer login: run AuthenticatePKCE again
+}
+```
+
+`RevokePKCE` revokes the refresh token server-side (RFC 7009) so a logout is
+more than deleting a file. `ErrPKCEUnsupported` is returned when the proxy
+does not publish the contract; fall back to `Authenticate`.
+
+Every endpoint in the discovery document must share the proxy's origin, the
+callback is a literal `127.0.0.1` loopback listener, the OAuth `state` is
+compared in constant time, and no request follows redirects, so the code,
+verifier, and refresh token can only ever be posted to the proxy the client
+was created for.
+
 ### Use the returned key
 
 `credential.Key` is the API key. Pass it as the bearer token to a standard
@@ -85,7 +122,11 @@ Log in with a browser, or print the URL for manual/headless completion:
 litellm-auth --base-url https://proxy.example.com login
 litellm-auth --base-url https://proxy.example.com login --no-browser
 litellm-auth --base-url https://proxy.example.com login --team team-engineering
+litellm-auth --base-url https://proxy.example.com login --pkce
 ```
+
+`--pkce` uses the proxy's authorization code + PKCE flow (LiteLLM >= 1.99);
+the team is chosen on the proxy's consent page, so it excludes `--team`.
 
 Other commands are:
 
@@ -140,10 +181,12 @@ rejects insecure existing file or directory modes. Treat the file and printed
 token as secrets. Credentials are bound to their normalized issuer URL, so a
 token cannot be loaded for a different proxy origin.
 
-This protocol has no refresh or revocation operation. `logout` removes only the
-local token file; revoke or rotate a server-side key through the LiteLLM proxy
-when that is required. After a credential expires, SSO users rerun `login` and
-imported-token users rerun `import-token` from their configured source.
+The classic CLI SSO protocol has no refresh or revocation operation: `logout`
+removes only the local token file, and after a credential expires SSO users
+rerun `login` and imported-token users rerun `import-token`. PKCE credentials
+additionally carry a refresh token, the registered client id, and the proxy's
+token and revocation endpoints; `RefreshPKCE` renews them and `RevokePKCE`
+revokes them server-side.
 
 ## Verification
 
