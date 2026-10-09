@@ -45,6 +45,24 @@ func (m *memoryStore) saveCount() int {
 	return m.saves
 }
 
+func (idp *fakeIdP) devicePollCount() int {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	return idp.devicePolls
+}
+
+func (idp *fakeIdP) deviceCallCount() int {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	return idp.deviceCalls
+}
+
+func (idp *fakeIdP) discoveryCallCount() int {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	return idp.discoveryCalls
+}
+
 func (idp *fakeIdP) tokenCallCount() int {
 	idp.mu.Lock()
 	defer idp.mu.Unlock()

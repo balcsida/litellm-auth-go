@@ -72,10 +72,16 @@ type fakeStore struct {
 	loadBase   *url.URL
 	saved      *litellmauth.Credential
 	deletes    int
+	loads      int
+	reloaded   *litellmauth.Credential // returned from the second Load on
 }
 
 func (s *fakeStore) Load(_ context.Context, base *url.URL) (litellmauth.Credential, error) {
 	s.loadBase = base
+	s.loads++
+	if s.loads > 1 && s.reloaded != nil {
+		return *s.reloaded, s.loadErr
+	}
 	return s.credential, s.loadErr
 }
 
@@ -1327,6 +1333,31 @@ func TestPrintTokenRefreshesStaleCredential(t *testing.T) {
 			t.Fatalf("stderr = %q", stderr)
 		}
 	})
+	t.Run("rejected refresh uses fresh reload", func(t *testing.T) {
+		rotated := stale
+		rotated.Key = "rotated-key"
+		rotated.IssuedAt = testNow
+		store := &fakeStore{credential: stale, reloaded: &rotated}
+		deps, stdout, _ := testDependencies(store)
+		var base string
+		deps.newClient = newClientFor(&base, litellmauth.ErrRefreshRejected)
+		if err := execute(context.Background(), []string{"print-token"}, deps); err != nil {
+			t.Fatal(err)
+		}
+		if stdout.String() != "rotated-key\n" || store.saved != nil {
+			t.Fatalf("stdout = %q, saved = %v", stdout, store.saved)
+		}
+	})
+	t.Run("rejected refresh with stale reload", func(t *testing.T) {
+		store := &fakeStore{credential: stale, reloaded: &stale}
+		deps, stdout, _ := testDependencies(store)
+		var base string
+		deps.newClient = newClientFor(&base, litellmauth.ErrRefreshRejected)
+		err := execute(context.Background(), []string{"print-token"}, deps)
+		if !errors.Is(err, litellmauth.ErrRefreshRejected) || stdout.Len() != 0 {
+			t.Fatalf("err = %v, stdout = %q", err, stdout)
+		}
+	})
 	t.Run("no refresh token", func(t *testing.T) {
 		noRefresh := stale
 		noRefresh.RefreshToken = ""
@@ -1362,7 +1393,7 @@ func TestPrintErrorOIDCSentinels(t *testing.T) {
 		want string
 	}{
 		{litellmauth.ErrRefreshRejected, "Refresh token was rejected; run litellm-auth login again."},
-		{fmt.Errorf("%w: busy", litellmauth.ErrLoopbackUnavailable), "Could not open a loopback callback port; use --flow device or --oidc-redirect-port."},
+		{fmt.Errorf("%w: busy", litellmauth.ErrLoopbackUnavailable), "Could not open a loopback callback port; for identity-provider login try --oidc-redirect-port or --flow device."},
 		{litellmauth.ErrOIDCDeviceUnsupported, litellmauth.ErrOIDCDeviceUnsupported.Error()},
 		{litellmauth.ErrPKCEUnsupported, litellmauth.ErrPKCEUnsupported.Error()},
 		{litellmauth.ErrPKCEDenied, litellmauth.ErrPKCEDenied.Error()},

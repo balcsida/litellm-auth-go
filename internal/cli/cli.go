@@ -378,10 +378,21 @@ func newPrintTokenCommand(global *globalOptions, deps dependencies) *cobra.Comma
 				if err != nil {
 					return err
 				}
-				if credential, err = client.Refresh(command.Context(), credential); err != nil {
-					return err
-				}
-				if err := store.Save(command.Context(), credential); err != nil {
+				refreshed, err := client.Refresh(command.Context(), credential)
+				switch {
+				case err == nil:
+					credential = refreshed
+					if err := store.Save(command.Context(), credential); err != nil {
+						return err
+					}
+				case errors.Is(err, litellmauth.ErrRefreshRejected):
+					// A parallel print-token may already have rotated the token.
+					reloaded, loadErr := store.Load(command.Context(), issuer)
+					if loadErr != nil || !reloaded.Fresh(deps.now()) {
+						return err
+					}
+					credential = reloaded
+				default:
 					return err
 				}
 			}
@@ -641,7 +652,7 @@ func printError(output io.Writer, err error) {
 	case errors.Is(err, litellmauth.ErrRefreshRejected):
 		fmt.Fprintln(output, "Refresh token was rejected; run litellm-auth login again.")
 	case errors.Is(err, litellmauth.ErrLoopbackUnavailable):
-		fmt.Fprintln(output, "Could not open a loopback callback port; use --flow device or --oidc-redirect-port.")
+		fmt.Fprintln(output, "Could not open a loopback callback port; for identity-provider login try --oidc-redirect-port or --flow device.")
 	case errors.Is(err, litellmauth.ErrOIDCDeviceUnsupported):
 		fmt.Fprintln(output, litellmauth.ErrOIDCDeviceUnsupported)
 	case errors.Is(err, litellmauth.ErrPKCEUnsupported):

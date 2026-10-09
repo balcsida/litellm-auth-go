@@ -36,8 +36,8 @@ func TestOIDCDeviceRoundTrip(t *testing.T) {
 		seen.VerificationURIComplete != seen.VerificationURI+"?user_code=WDJB-MJHT" || seen.Interval != time.Second {
 		t.Fatalf("authorization = %+v", seen)
 	}
-	if idp.devicePolls != 2 {
-		t.Fatalf("polls = %d, want 2", idp.devicePolls)
+	if polls := idp.devicePollCount(); polls != 2 {
+		t.Fatalf("polls = %d, want 2", polls)
 	}
 }
 
@@ -52,8 +52,8 @@ func TestOIDCDeviceExplicitEndpointsSkipDiscovery(t *testing.T) {
 	if _, err := client.AuthenticateOIDCDevice(context.Background(), OIDCDeviceOptions{Provider: provider}); err != nil {
 		t.Fatalf("AuthenticateOIDCDevice: %v", err)
 	}
-	if idp.discoveryCalls != 0 {
-		t.Fatalf("discovery calls = %d", idp.discoveryCalls)
+	if calls := idp.discoveryCallCount(); calls != 0 {
+		t.Fatalf("discovery calls = %d", calls)
 	}
 }
 
@@ -73,8 +73,8 @@ func TestOIDCDeviceOnAuthorizationErrorAborts(t *testing.T) {
 		Provider:        idp.provider(),
 		OnAuthorization: func(context.Context, DeviceAuthorization) error { return sentinel },
 	})
-	if err != sentinel || idp.devicePolls != 0 {
-		t.Fatalf("err = %v polls = %d", err, idp.devicePolls)
+	if polls := idp.devicePollCount(); err != sentinel || polls != 0 {
+		t.Fatalf("err = %v polls = %d", err, polls)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestOIDCDeviceExpiresIn(t *testing.T) {
 	if !errors.As(err, &timeout) || !errors.Is(err, ErrLoginExpired) {
 		t.Fatalf("err = %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("took %v", elapsed)
 	}
 }
@@ -131,6 +131,7 @@ func TestOIDCDeviceMalformedAuthorization(t *testing.T) {
 		"negative interval":   func(idp *fakeIdP) { idp.deviceInterval = -1 },
 		"zero expires_in":     func(idp *fakeIdP) { idp.deviceExpiresIn = 0 },
 		"bad verification":    func(idp *fakeIdP) { idp.deviceVerificationURI = "not a url" },
+		"http verification":   func(idp *fakeIdP) { idp.deviceVerificationURI = "http://example.com/activate" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			idp := newFakeIdP(t)

@@ -62,7 +62,7 @@ func nextDeviceInterval(interval time.Duration, code string) time.Duration {
 
 func validVerificationURI(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http" && isLoopbackHost(u.Hostname())) && u.Host != "" && u.User == nil
 }
 
 // AuthenticateOIDCDevice runs the OAuth 2.0 device authorization grant (RFC

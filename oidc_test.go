@@ -58,6 +58,8 @@ type fakeIdP struct {
 	omitDeviceCode        bool
 	omitDeviceEndpoint    bool
 	deviceVerificationURI string
+
+	tokenEndpointOverride string // replaces token_endpoint in the discovery document
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -112,6 +114,9 @@ func (idp *fakeIdP) discovery(w http.ResponseWriter, r *http.Request) {
 	}
 	if idp.omitDeviceEndpoint {
 		delete(document, "device_authorization_endpoint")
+	}
+	if idp.tokenEndpointOverride != "" {
+		document["token_endpoint"] = idp.tokenEndpointOverride
 	}
 	if idp.dropToken {
 		delete(document, "token_endpoint")
@@ -659,6 +664,21 @@ func TestOIDCDiscoveryFillsEmptyEndpointsAndKeepsOverrides(t *testing.T) {
 	base := idp.srv.URL + "/oidc/2"
 	if got.AuthorizeURL != base+"/auth" || got.TokenURL != idp.srv.URL+"/custom/token" || got.DeviceAuthorizationURL != base+"/device" {
 		t.Fatalf("provider = %+v", got)
+	}
+}
+
+func TestOIDCDiscoveryRejectsHTTPEndpointsForHTTPSIssuer(t *testing.T) {
+	idp := newFakeIdP(t)
+	idp.tokenEndpointOverride = "http://127.0.0.1:1/token"
+	client := idp.client(t)
+	if _, err := client.StartOIDC(context.Background(), OIDCOptions{Provider: idp.provider()}); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("StartOIDC err = %v; want ErrProtocol", err)
+	}
+	if _, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: idp.provider(), OnSession: idp.browse}); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("AuthenticateOIDC err = %v; want ErrProtocol", err)
+	}
+	if calls := idp.tokenCallCount(); calls != 0 {
+		t.Fatalf("token calls = %d; want 0", calls)
 	}
 }
 

@@ -31,7 +31,7 @@ func TestLiteLLMOIDCSmoke(t *testing.T) {
 	}
 	issuer := os.Getenv("LITELLM_OIDC_SMOKE_ISSUER")
 	if issuer == "" {
-		t.Fatal("LITELLM_OIDC_SMOKE_ISSUER is not set")
+		t.Skip("LITELLM_OIDC_SMOKE_ISSUER is not set")
 	}
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

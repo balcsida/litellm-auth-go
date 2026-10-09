@@ -48,7 +48,7 @@ func (p OIDCProvider) validate() error {
 		u, err := url.Parse(raw)
 		if err != nil || u.Host == "" || u.User != nil ||
 			(u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
-			return errors.New("OIDC provider endpoints must be absolute https URLs")
+			return errors.New("OIDC provider endpoints must be absolute https URLs (http only for loopback hosts)")
 		}
 	}
 	if u, _ := url.Parse(p.Issuer); u.RawQuery != "" || u.Fragment != "" {
@@ -117,6 +117,13 @@ func (c *Client) DiscoverOIDC(ctx context.Context, provider OIDCProvider) (OIDCP
 	}
 	if provider.DeviceAuthorizationURL == "" {
 		provider.DeviceAuthorizationURL = document.DeviceAuthorizationEndpoint
+	}
+	if strings.HasPrefix(provider.Issuer, "https://") {
+		for _, endpoint := range []string{provider.AuthorizeURL, provider.TokenURL, provider.DeviceAuthorizationURL} {
+			if endpoint != "" && !strings.HasPrefix(endpoint, "https://") {
+				return OIDCProvider{}, protocolError("discovery: endpoints must use https")
+			}
+		}
 	}
 	if err := provider.validate(); err != nil {
 		return OIDCProvider{}, protocolError("discovery: " + err.Error())

@@ -133,7 +133,7 @@ type Credential struct {
 	// ClientID is the dynamically registered public client that owns the
 	// refresh token.
 	ClientID string `json:"client_id,omitempty"`
-	// TokenEndpoint is the proxy endpoint that refreshes the credential.
+	// TokenEndpoint is the token endpoint, at the proxy or the identity provider, that refreshes the credential.
 	TokenEndpoint string `json:"token_endpoint,omitempty"`
 	// RevocationEndpoint is the proxy endpoint that revokes the refresh token.
 	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
