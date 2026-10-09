@@ -99,6 +99,7 @@ public OIDC client (no secret) with the loopback redirect URI
 provider := litellmauth.OIDCProvider{
 	Issuer:   "https://idp.example.com",
 	ClientID: "litellm-cli",
+	Scope:    "openid profile email offline_access",
 }
 credential, err := client.AuthenticateOIDC(ctx, litellmauth.OIDCOptions{
 	Provider: provider,
@@ -123,7 +124,8 @@ credential is stale (one refresh at a time), and saves the result.
 `ErrLoopbackUnavailable` and `ErrOIDCDeviceUnsupported` report that no callback
 port could be bound or that the provider has no device endpoint.
 
-This client does not verify the `id_token`; LiteLLM does. LiteLLM's JWT
+This client checks the `id_token` claims but not its signature; LiteLLM
+verifies the signature. LiteLLM's JWT
 authentication is an enterprise feature; see
 [token_auth](https://docs.litellm.ai/docs/proxy/token_auth). Configure the
 proxy with the issuer and the public client id as the audience:
@@ -194,7 +196,8 @@ the team is chosen on the proxy's consent page. `--flow auto` (the default)
 uses the identity provider when both issuer and client id are set: device with
 `--no-browser`, otherwise browser, falling back to device only if no loopback
 callback port can be bound before anything opens. Without OIDC settings it uses
-the LiteLLM CLI SSO flow. `browser` and `device` require both settings, and
+the LiteLLM CLI SSO flow; setting only one of the two is an error. `browser`
+and `device` require both settings, and
 `--team` applies only to `litellm-sso` (and to `auto` without OIDC settings).
 Once a flow has started, the CLI never switches to another. The default scope
 includes `offline_access` so a refresh token is issued; for providers that
