@@ -41,6 +41,9 @@ var ErrPKCEDenied = errors.New("LiteLLM login was denied in the browser")
 // remedy is a fresh login.
 var ErrRefreshRejected = errors.New("LiteLLM refresh token was rejected; sign in again")
 
+// ErrLoopbackUnavailable reports that no loopback callback listener could be bound.
+var ErrLoopbackUnavailable = errors.New("loopback callback listener unavailable")
+
 // ErrProxyUnavailable reports a 503 from the proxy's token or revocation
 // endpoint: the proxy could not reach its shared cache. Retry shortly; the
 // stored credential is still valid as far as the proxy knows.
@@ -591,7 +594,7 @@ func listenLoopback(ports []int) (net.Listener, error) {
 		}
 		lastErr = err
 	}
-	return nil, fmt.Errorf("LiteLLM PKCE loopback listener: %w", lastErr)
+	return nil, fmt.Errorf("%w: %v", ErrLoopbackUnavailable, lastErr)
 }
 
 func randomURLSafe(bytes int) (string, error) {

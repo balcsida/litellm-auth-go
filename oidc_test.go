@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,6 +38,13 @@ type fakeIdP struct {
 	audience      any
 	azp           string
 	expiresAt     time.Time
+
+	discoveryCalls  int
+	discoveryIssuer string
+	dropToken       bool
+	omitS256        bool
+	discoveryStatus int
+	discoveryRedir  bool
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
@@ -45,6 +53,7 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oidc/2/auth", idp.authorize)
 	mux.HandleFunc("/oidc/2/token", idp.token)
+	mux.HandleFunc("/oidc/2/.well-known/openid-configuration", idp.discovery)
 	idp.srv = httptest.NewTLSServer(mux)
 	idp.issuer = idp.srv.URL + "/oidc/2"
 	idp.audience = "example-client"
@@ -55,6 +64,46 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 
 func (idp *fakeIdP) provider() OIDCProvider {
 	return OIDCProvider{Issuer: idp.srv.URL + "/oidc/2", ClientID: "example-client", Scope: "openid params"}
+}
+
+// fullProvider names every endpoint, so it must never trigger discovery.
+func (idp *fakeIdP) fullProvider() OIDCProvider {
+	provider := idp.provider()
+	provider.AuthorizeURL = idp.srv.URL + "/oidc/2/auth"
+	provider.TokenURL = idp.srv.URL + "/oidc/2/token"
+	return provider
+}
+
+func (idp *fakeIdP) discovery(w http.ResponseWriter, r *http.Request) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.discoveryCalls++
+	if idp.discoveryRedir {
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+		return
+	}
+	if idp.discoveryStatus != 0 {
+		http.Error(w, "no", idp.discoveryStatus)
+		return
+	}
+	document := map[string]any{
+		"issuer": idp.srv.URL + "/oidc/2", "authorization_endpoint": idp.srv.URL + "/oidc/2/auth",
+		"token_endpoint":                   idp.srv.URL + "/oidc/2/token",
+		"device_authorization_endpoint":    idp.srv.URL + "/oidc/2/device",
+		"code_challenge_methods_supported": []string{"S256"},
+		"jwks_uri":                         idp.srv.URL + "/oidc/2/jwks", "response_types_supported": []string{"code"},
+	}
+	if idp.discoveryIssuer != "" {
+		document["issuer"] = idp.discoveryIssuer
+	}
+	if idp.dropToken {
+		delete(document, "token_endpoint")
+	}
+	if idp.omitS256 {
+		document["code_challenge_methods_supported"] = []string{"plain"}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(document)
 }
 
 func (idp *fakeIdP) client(t *testing.T) *Client {
@@ -262,6 +311,8 @@ func TestOIDCProviderValidation(t *testing.T) {
 	client, _ := New("https://proxy.example.com")
 	for name, provider := range map[string]OIDCProvider{
 		"http issuer":     {Issuer: "http://idp.example/oidc/2", ClientID: "c", Scope: "openid"},
+		"http endpoint":   {Issuer: "https://idp.example/oidc/2", ClientID: "c", Scope: "openid", TokenURL: "http://idp.example/token"},
+		"issuer query":    {Issuer: "https://idp.example/oidc/2?x=1", ClientID: "c", Scope: "openid"},
 		"missing openid":  {Issuer: "https://idp.example/oidc/2", ClientID: "c", Scope: "params"},
 		"missing client":  {Issuer: "https://idp.example/oidc/2", Scope: "openid"},
 		"userinfo in URL": {Issuer: "https://user@idp.example/oidc/2", ClientID: "c", Scope: "openid"},
@@ -279,7 +330,7 @@ func TestOIDCAuthorizePreservesProviderQuery(t *testing.T) {
 	for _, key := range []string{"response_type", "client_id", "redirect_uri", "scope", "state", "nonce", "code_challenge", "code_challenge_method"} {
 		query[key] = []string{"stale", "duplicate"}
 	}
-	provider.AuthorizeURL = provider.authorizeURL() + "?" + query.Encode()
+	provider.AuthorizeURL = idp.srv.URL + "/oidc/2/auth?" + query.Encode()
 	session, err := idp.client(t).StartOIDC(context.Background(), OIDCOptions{Provider: provider})
 	if err != nil {
 		t.Fatal(err)
@@ -453,6 +504,7 @@ func TestOIDCComparesIssuersExactly(t *testing.T) {
 	t.Run("trailing slash is kept", func(t *testing.T) {
 		idp := newFakeIdP(t)
 		idp.issuer += "/"
+		idp.discoveryIssuer = idp.issuer
 		provider := idp.provider()
 		provider.Issuer += "/"
 		client := idp.client(t)
@@ -521,5 +573,101 @@ func TestOIDCValidatesAuthorizedParty(t *testing.T) {
 				t.Fatalf("err = %v; want audience mismatch", err)
 			}
 		})
+	}
+}
+
+func TestOIDCValidateAcceptsLoopbackHTTP(t *testing.T) {
+	provider := OIDCProvider{Issuer: "http://127.0.0.1:9000/oidc", ClientID: "c", Scope: "openid", TokenURL: "http://127.0.0.1:9000/token"}
+	if err := provider.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestOIDCDiscoveryFillsEmptyEndpointsAndKeepsOverrides(t *testing.T) {
+	idp := newFakeIdP(t)
+	provider := idp.provider()
+	provider.TokenURL = idp.srv.URL + "/custom/token"
+	got, err := idp.client(t).DiscoverOIDC(context.Background(), provider)
+	if err != nil {
+		t.Fatalf("DiscoverOIDC: %v", err)
+	}
+	base := idp.srv.URL + "/oidc/2"
+	if got.AuthorizeURL != base+"/auth" || got.TokenURL != idp.srv.URL+"/custom/token" || got.DeviceAuthorizationURL != base+"/device" {
+		t.Fatalf("provider = %+v", got)
+	}
+}
+
+func TestOIDCFullyConfiguredProviderSkipsDiscovery(t *testing.T) {
+	idp := newFakeIdP(t)
+	client := idp.client(t)
+	credential, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: idp.fullProvider(), OnSession: idp.browse})
+	if err != nil {
+		t.Fatalf("AuthenticateOIDC: %v", err)
+	}
+	if _, err := client.RefreshOIDC(context.Background(), idp.fullProvider(), credential); err != nil {
+		t.Fatalf("RefreshOIDC: %v", err)
+	}
+	if idp.discoveryCalls != 0 {
+		t.Fatalf("discovery calls = %d; want 0", idp.discoveryCalls)
+	}
+}
+
+func TestOIDCRefreshUsesStoredTokenEndpointWithoutDiscovery(t *testing.T) {
+	idp := newFakeIdP(t)
+	client := idp.client(t)
+	credential, err := client.AuthenticateOIDC(context.Background(), OIDCOptions{Provider: idp.provider(), OnSession: idp.browse})
+	if err != nil {
+		t.Fatalf("AuthenticateOIDC: %v", err)
+	}
+	if credential.TokenEndpoint == "" || idp.discoveryCalls != 1 {
+		t.Fatalf("TokenEndpoint = %q, discovery calls = %d", credential.TokenEndpoint, idp.discoveryCalls)
+	}
+	if _, err := client.RefreshOIDC(context.Background(), idp.provider(), credential); err != nil {
+		t.Fatalf("RefreshOIDC: %v", err)
+	}
+	if idp.discoveryCalls != 1 {
+		t.Fatalf("discovery calls = %d; want no new request on refresh", idp.discoveryCalls)
+	}
+}
+
+func TestOIDCDiscoveryRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		set  func(*fakeIdP)
+		http bool
+	}{
+		"issuer mismatch": {set: func(idp *fakeIdP) { idp.discoveryIssuer = idp.srv.URL + "/oidc/2/" }},
+		"redirect":        {set: func(idp *fakeIdP) { idp.discoveryRedir = true }},
+		"non-200":         {set: func(idp *fakeIdP) { idp.discoveryStatus = http.StatusNotFound }, http: true},
+		"no token":        {set: func(idp *fakeIdP) { idp.dropToken = true }},
+		"no S256":         {set: func(idp *fakeIdP) { idp.omitS256 = true }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			idp := newFakeIdP(t)
+			tc.set(idp)
+			_, err := idp.client(t).DiscoverOIDC(context.Background(), idp.provider())
+			var httpErr *HTTPError
+			switch {
+			case err == nil:
+				t.Fatal("DiscoverOIDC accepted the document")
+			case tc.http && (!errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound):
+				t.Fatalf("err = %v; want HTTPError 404", err)
+			case !tc.http && !errors.Is(err, ErrProtocol):
+				t.Fatalf("err = %v; want ErrProtocol", err)
+			}
+		})
+	}
+}
+
+func TestOIDCStartReportsLoopbackUnavailable(t *testing.T) {
+	idp := newFakeIdP(t)
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+	_, err = idp.client(t).StartOIDC(context.Background(), OIDCOptions{Provider: idp.fullProvider(), RedirectPorts: []int{port}})
+	if !errors.Is(err, ErrLoopbackUnavailable) {
+		t.Fatalf("err = %v; want ErrLoopbackUnavailable", err)
 	}
 }
