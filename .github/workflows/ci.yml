@@ -82,7 +82,9 @@ jobs:
     name: LiteLLM full login smoke
     runs-on: ubuntu-latest
     env:
-      LITELLM_LICENSE: ${{ secrets.LITELLM_LICENSE }}
+      # Only the presence flag is job-wide; the secret itself reaches the
+      # proxy start step alone.
+      LITELLM_LICENSE_PRESENT: ${{ secrets.LITELLM_LICENSE != '' }}
     services:
       postgres:
         image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
@@ -115,8 +117,9 @@ jobs:
           python-version: "3.12"
       - name: Install LiteLLM
         run: |
+          # LiteLLM v1.99.0
           python -m pip install \
-            "litellm[proxy] @ git+https://github.com/BerriAI/litellm.git@v1.99.0" \
+            "litellm[proxy] @ git+https://github.com/BerriAI/litellm.git@fa647f742d7baefe8eb1181899d9c81b41559772" \
             "prisma==0.11.0"
           prisma generate --schema "$(python -c 'import pathlib, litellm; print(pathlib.Path(litellm.__file__).parent / "proxy/schema.prisma")')"
       - name: Start LiteLLM
@@ -131,6 +134,7 @@ jobs:
           LITELLM_MASTER_KEY: sk-smoke-master-key
           LITELLM_SALT_KEY: smoke-salt-key-with-at-least-32-bytes
           PROXY_BASE_URL: http://127.0.0.1:4000
+          LITELLM_LICENSE: ${{ secrets.LITELLM_LICENSE }}
         run: |
           if [ -n "${LITELLM_LICENSE:-}" ]; then
             cat > "$RUNNER_TEMP/litellm.yaml" <<'EOF'
@@ -176,7 +180,7 @@ jobs:
           LITELLM_SMOKE_URL: http://127.0.0.1:4000
         run: go test -run '^TestLiteLLMFullLoginSmoke$' -count=1 .
       - name: Run OIDC JWT mapping smoke
-        if: env.LITELLM_LICENSE != ''
+        if: env.LITELLM_LICENSE_PRESENT == 'true'
         env:
           LITELLM_SMOKE_URL: http://127.0.0.1:4000
           LITELLM_OIDC_SMOKE_ISSUER: http://127.0.0.1:19090
