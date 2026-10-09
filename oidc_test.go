@@ -45,14 +45,27 @@ type fakeIdP struct {
 	omitS256        bool
 	discoveryStatus int
 	discoveryRedir  bool
+
+	deviceCalls           int
+	devicePolls           int
+	pendingRounds         int
+	slowDown              bool
+	denyDevice            bool
+	expireDevice          bool
+	deviceInterval        int64
+	deviceExpiresIn       int64
+	omitDeviceCode        bool
+	omitDeviceEndpoint    bool
+	deviceVerificationURI string
 }
 
 func newFakeIdP(t *testing.T) *fakeIdP {
 	t.Helper()
-	idp := &fakeIdP{t: t, codes: map[string]bool{}, refreshTokens: map[string]bool{}, rotateRefresh: true, subject: "NH10000001"}
+	idp := &fakeIdP{t: t, codes: map[string]bool{}, refreshTokens: map[string]bool{}, rotateRefresh: true, subject: "NH10000001", deviceInterval: 1, deviceExpiresIn: 300}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oidc/2/auth", idp.authorize)
 	mux.HandleFunc("/oidc/2/token", idp.token)
+	mux.HandleFunc("/oidc/2/device", idp.device)
 	mux.HandleFunc("/oidc/2/.well-known/openid-configuration", idp.discovery)
 	idp.srv = httptest.NewTLSServer(mux)
 	idp.issuer = idp.srv.URL + "/oidc/2"
@@ -96,6 +109,9 @@ func (idp *fakeIdP) discovery(w http.ResponseWriter, r *http.Request) {
 	if idp.discoveryIssuer != "" {
 		document["issuer"] = idp.discoveryIssuer
 	}
+	if idp.omitDeviceEndpoint {
+		delete(document, "device_authorization_endpoint")
+	}
 	if idp.dropToken {
 		delete(document, "token_endpoint")
 	}
@@ -104,6 +120,31 @@ func (idp *fakeIdP) discovery(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(document)
+}
+
+func (idp *fakeIdP) device(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.deviceCalls++
+	if r.PostForm.Get("client_id") != "example-client" || !strings.Contains(r.PostForm.Get("scope"), "openid") {
+		http.Error(w, "bad device request", http.StatusBadRequest)
+		return
+	}
+	verification := idp.deviceVerificationURI
+	if verification == "" {
+		verification = idp.srv.URL + "/oidc/2/activate"
+	}
+	body := map[string]any{
+		"device_code": "device-code-1", "user_code": "WDJB-MJHT", "verification_uri": verification,
+		"verification_uri_complete": verification + "?user_code=WDJB-MJHT",
+		"expires_in":                idp.deviceExpiresIn, "interval": idp.deviceInterval,
+	}
+	if idp.omitDeviceCode {
+		delete(body, "device_code")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 func (idp *fakeIdP) client(t *testing.T) *Client {
@@ -173,6 +214,26 @@ func (idp *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 	}
 	nonce := ""
 	switch r.PostForm.Get("grant_type") {
+	case "urn:ietf:params:oauth:grant-type:device_code":
+		idp.devicePolls++
+		failure := ""
+		switch {
+		case r.PostForm.Get("device_code") != "device-code-1" || r.PostForm.Get("client_id") != "example-client":
+			failure = "invalid_grant"
+		case idp.denyDevice:
+			failure = "access_denied"
+		case idp.expireDevice:
+			failure = "expired_token"
+		case idp.slowDown && idp.devicePolls == 1:
+			failure = "slow_down"
+		case idp.devicePolls <= idp.pendingRounds:
+			failure = "authorization_pending"
+		}
+		if failure != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": failure})
+			return
+		}
 	case "authorization_code":
 		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
 		if !idp.codes[r.PostForm.Get("code")] || base64.RawURLEncoding.EncodeToString(sum[:]) != idp.challenge || r.PostForm.Get("client_id") != "example-client" {

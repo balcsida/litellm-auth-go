@@ -338,7 +338,17 @@ func (c *Client) postOIDCToken(ctx context.Context, endpoint string, form url.Va
 				return oidcTokenResponse{}, ErrRefreshRejected
 			}
 		}
-		return oidcTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"))
+		if op == "device" {
+			switch code := oauthErrorCode(body); code {
+			case "authorization_pending", "slow_down":
+				return oidcTokenResponse{}, &devicePollError{code: code}
+			case "expired_token":
+				return oidcTokenResponse{}, &LoginTimeoutError{}
+			case "access_denied":
+				return oidcTokenResponse{}, ErrPKCEDenied
+			}
+		}
+		return oidcTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"), form.Get("device_code"))
 	}
 	var token oidcTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil || token.IDToken == "" ||
