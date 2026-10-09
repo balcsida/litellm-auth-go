@@ -44,8 +44,11 @@ func TestOIDCDeviceRoundTrip(t *testing.T) {
 func TestOIDCDeviceExplicitEndpointsSkipDiscovery(t *testing.T) {
 	idp := newFakeIdP(t)
 	client := idp.client(t)
-	provider := idp.fullProvider()
+	// Device login needs only the device and token endpoints; an explicit
+	// AuthorizeURL is not required to skip discovery.
+	provider := idp.provider()
 	provider.DeviceAuthorizationURL = idp.srv.URL + "/oidc/2/device"
+	provider.TokenURL = idp.srv.URL + "/oidc/2/token"
 	if _, err := client.AuthenticateOIDCDevice(context.Background(), OIDCDeviceOptions{Provider: provider}); err != nil {
 		t.Fatalf("AuthenticateOIDCDevice: %v", err)
 	}

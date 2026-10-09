@@ -125,13 +125,18 @@ func (c *Client) DiscoverOIDC(ctx context.Context, provider OIDCProvider) (OIDCP
 }
 
 // resolveOIDCProvider validates the provider and runs discovery only when an
-// endpoint it needs is empty. With needDevice the caller checks the device
-// endpoint afterwards, since not every provider advertises one.
+// endpoint the flow needs is empty: the token endpoint plus the authorization
+// endpoint, or the device endpoint with needDevice. The caller checks the
+// device endpoint afterwards, since not every provider advertises one.
 func (c *Client) resolveOIDCProvider(ctx context.Context, provider OIDCProvider, needDevice bool) (OIDCProvider, error) {
 	if err := provider.validate(); err != nil {
 		return OIDCProvider{}, err
 	}
-	if provider.AuthorizeURL == "" || provider.TokenURL == "" || (needDevice && provider.DeviceAuthorizationURL == "") {
+	entry := provider.AuthorizeURL
+	if needDevice {
+		entry = provider.DeviceAuthorizationURL
+	}
+	if entry == "" || provider.TokenURL == "" {
 		return c.DiscoverOIDC(ctx, provider)
 	}
 	return provider, nil
