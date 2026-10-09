@@ -29,7 +29,9 @@ const defaultBaseURL = "http://localhost:4000"
 type authClient interface {
 	Authenticate(context.Context, litellmauth.AuthenticateOptions) (litellmauth.Credential, error)
 	AuthenticatePKCE(context.Context, litellmauth.PKCEOptions) (litellmauth.Credential, error)
-	RefreshPKCE(context.Context, litellmauth.Credential) (litellmauth.Credential, error)
+	AuthenticateOIDC(context.Context, litellmauth.OIDCOptions) (litellmauth.Credential, error)
+	AuthenticateOIDCDevice(context.Context, litellmauth.OIDCDeviceOptions) (litellmauth.Credential, error)
+	Refresh(context.Context, litellmauth.Credential) (litellmauth.Credential, error)
 	RevokePKCE(context.Context, litellmauth.Credential) error
 }
 
@@ -126,8 +128,8 @@ func newRoot(deps dependencies) *cobra.Command {
 
 func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 	var noBrowser bool
-	var pkce bool
-	var team string
+	var flow, team string
+	var redirectPorts []int
 	command := &cobra.Command{
 		Use:   "login",
 		Short: "Authenticate and store a credential",
@@ -144,33 +146,15 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(command.Context(), global.timeout)
 			defer cancel()
-			if pkce {
-				return pkceLogin(ctx, client, store, deps, noBrowser)
+			provider := litellmauth.OIDCProvider{
+				Issuer:   flagOrEnv(command, "oidc-issuer", "LITELLM_OIDC_ISSUER", deps.getenv),
+				ClientID: flagOrEnv(command, "oidc-client-id", "LITELLM_OIDC_CLIENT_ID", deps.getenv),
+				Scope:    flagOrEnv(command, "oidc-scope", "LITELLM_OIDC_SCOPE", deps.getenv),
 			}
-			options := litellmauth.AuthenticateOptions{
-				TeamID: team,
-				OnSession: func(_ context.Context, session litellmauth.Session) error {
-					if session.VerificationURL == nil {
-						return litellmauth.ErrProtocol
-					}
-					safeURL, safeCode := safe(session.VerificationURL.String()), safe(session.UserCode)
-					fmt.Fprintf(deps.stdout, "Verification URL: %s\nUser code: %s\n", safeURL, safeCode)
-					if noBrowser {
-						return nil
-					}
-					if err := deps.openBrowser(session.VerificationURL.String()); err != nil {
-						fmt.Fprintln(deps.stderr, "Browser could not be opened; continue manually with the URL above.")
-					}
-					return nil
-				},
+			if provider.Scope == "" {
+				provider.Scope = defaultOIDCScope
 			}
-			if team == "" && deps.isTerminal() {
-				options.SelectTeam = teamSelector(deps)
-			}
-			if global.verbose {
-				options.OnEvent = func(event litellmauth.Event) { printEvent(deps.stderr, event) }
-			}
-			credential, err := client.Authenticate(ctx, options)
+			credential, err := loginFlow(ctx, client, deps, global.verbose, flow, team, noBrowser, provider, redirectPorts)
 			if err != nil {
 				return err
 			}
@@ -186,39 +170,121 @@ func newLoginCommand(global *globalOptions, deps dependencies) *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&noBrowser, "no-browser", false, "do not open a browser")
-	command.Flags().BoolVar(&pkce, "pkce", false, "use the proxy's OAuth authorization code + PKCE flow (LiteLLM >= 1.99); the team is picked on the proxy's consent page")
+	command.Flags().StringVar(&flow, "flow", "auto", "login flow: auto, browser, device, pkce, or litellm-sso")
 	command.Flags().StringVar(&team, "team", "", "LiteLLM team ID")
-	command.MarkFlagsMutuallyExclusive("pkce", "team")
+	command.Flags().String("oidc-issuer", "", "identity provider issuer URL (or LITELLM_OIDC_ISSUER)")
+	command.Flags().String("oidc-client-id", "", "public OIDC client id (or LITELLM_OIDC_CLIENT_ID)")
+	command.Flags().String("oidc-scope", "", "OIDC scopes (or LITELLM_OIDC_SCOPE); default "+defaultOIDCScope)
+	command.Flags().IntSliceVar(&redirectPorts, "oidc-redirect-port", nil, "loopback callback port to try, for providers that register exact redirect URIs")
 	return command
 }
 
-// pkceLogin drives the proxy-hosted authorization code + PKCE flow. The team
-// is chosen on the proxy's consent page, so there is no local picker.
-func pkceLogin(ctx context.Context, client authClient, store credentialStore, deps dependencies, noBrowser bool) error {
-	credential, err := client.AuthenticatePKCE(ctx, litellmauth.PKCEOptions{
-		OnSession: func(_ context.Context, session litellmauth.PKCESession) error {
-			fmt.Fprintf(deps.stdout, "Open this URL to sign in: %s\n", safe(session.AuthorizeURL.String()))
-			if noBrowser {
-				return nil
+const defaultOIDCScope = "openid profile email offline_access"
+
+func flagOrEnv(command *cobra.Command, name, env string, getenv func(string) string) string {
+	if command.Flags().Changed(name) {
+		value, _ := command.Flags().GetString(name)
+		return value
+	}
+	return getenv(env)
+}
+
+// loginFlow runs exactly one login flow; auto only falls back from browser to
+// device before any browser session has started.
+func loginFlow(ctx context.Context, client authClient, deps dependencies, verbose bool, flow, team string, noBrowser bool, provider litellmauth.OIDCProvider, redirectPorts []int) (litellmauth.Credential, error) {
+	errSettings := errors.New("set --oidc-issuer and --oidc-client-id (or LITELLM_OIDC_ISSUER and LITELLM_OIDC_CLIENT_ID) for identity-provider login")
+	errTeam := errors.New("--team applies only to the litellm-sso flow")
+	haveBoth := provider.Issuer != "" && provider.ClientID != ""
+	switch flow {
+	case "litellm-sso":
+		return ssoLogin(ctx, client, deps, verbose, team, noBrowser)
+	case "pkce":
+		if team != "" {
+			return litellmauth.Credential{}, errTeam
+		}
+		return client.AuthenticatePKCE(ctx, litellmauth.PKCEOptions{OnSession: openAuthorizeURL(deps, noBrowser)})
+	case "browser", "device", "auto":
+		if flow == "auto" && provider.Issuer == "" && provider.ClientID == "" {
+			return ssoLogin(ctx, client, deps, verbose, team, noBrowser)
+		}
+		if !haveBoth {
+			return litellmauth.Credential{}, errSettings
+		}
+		if team != "" {
+			return litellmauth.Credential{}, errTeam
+		}
+		device := func() (litellmauth.Credential, error) {
+			return client.AuthenticateOIDCDevice(ctx, litellmauth.OIDCDeviceOptions{
+				Provider: provider,
+				OnAuthorization: func(_ context.Context, authorization litellmauth.DeviceAuthorization) error {
+					verificationURL := authorization.VerificationURIComplete
+					if verificationURL == "" {
+						verificationURL = authorization.VerificationURI
+					}
+					fmt.Fprintf(deps.stdout, "Verification URL: %s\nUser code: %s\n", safe(verificationURL), safe(authorization.UserCode))
+					if !noBrowser {
+						openBrowserOrWarn(deps, verificationURL)
+					}
+					return nil
+				},
+			})
+		}
+		if flow == "device" || flow == "auto" && noBrowser {
+			return device()
+		}
+		credential, err := client.AuthenticateOIDC(ctx, litellmauth.OIDCOptions{
+			Provider:      provider,
+			RedirectPorts: redirectPorts,
+			OnSession:     openAuthorizeURL(deps, noBrowser),
+		})
+		if flow == "auto" && errors.Is(err, litellmauth.ErrLoopbackUnavailable) {
+			return device()
+		}
+		return credential, err
+	default:
+		return litellmauth.Credential{}, errors.New("invalid login flow: use auto, browser, device, pkce, or litellm-sso")
+	}
+}
+
+func ssoLogin(ctx context.Context, client authClient, deps dependencies, verbose bool, team string, noBrowser bool) (litellmauth.Credential, error) {
+	options := litellmauth.AuthenticateOptions{
+		TeamID: team,
+		OnSession: func(_ context.Context, session litellmauth.Session) error {
+			if session.VerificationURL == nil {
+				return litellmauth.ErrProtocol
 			}
-			if err := deps.openBrowser(session.AuthorizeURL.String()); err != nil {
-				fmt.Fprintln(deps.stderr, "Browser could not be opened; continue manually with the URL above.")
+			safeURL, safeCode := safe(session.VerificationURL.String()), safe(session.UserCode)
+			fmt.Fprintf(deps.stdout, "Verification URL: %s\nUser code: %s\n", safeURL, safeCode)
+			if !noBrowser {
+				openBrowserOrWarn(deps, session.VerificationURL.String())
 			}
 			return nil
 		},
-	})
-	if err != nil {
-		return err
 	}
-	var output bytes.Buffer
-	if err := printCredential(&output, "Authenticated", credential, deps.now()); err != nil {
-		return err
+	if team == "" && deps.isTerminal() {
+		options.SelectTeam = teamSelector(deps)
 	}
-	if err := store.Save(ctx, credential); err != nil {
-		return err
+	if verbose {
+		options.OnEvent = func(event litellmauth.Event) { printEvent(deps.stderr, event) }
 	}
-	_, err = deps.stdout.Write(output.Bytes())
-	return err
+	return client.Authenticate(ctx, options)
+}
+
+// openAuthorizeURL prints the authorization URL and, unless noBrowser, opens it.
+func openAuthorizeURL(deps dependencies, noBrowser bool) func(context.Context, litellmauth.PKCESession) error {
+	return func(_ context.Context, session litellmauth.PKCESession) error {
+		fmt.Fprintf(deps.stdout, "Open this URL to sign in: %s\n", safe(session.AuthorizeURL.String()))
+		if !noBrowser {
+			openBrowserOrWarn(deps, session.AuthorizeURL.String())
+		}
+		return nil
+	}
+}
+
+func openBrowserOrWarn(deps dependencies, target string) {
+	if err := deps.openBrowser(target); err != nil {
+		fmt.Fprintln(deps.stderr, "Browser could not be opened; continue manually with the URL above.")
+	}
 }
 
 func newLogoutCommand(global *globalOptions, deps dependencies) *cobra.Command {
@@ -301,7 +367,23 @@ func newPrintTokenCommand(global *globalOptions, deps dependencies) *cobra.Comma
 				return err
 			}
 			if !credential.Fresh(deps.now()) {
-				return litellmauth.ErrCredentialStale
+				if credential.RefreshToken == "" {
+					return litellmauth.ErrCredentialStale
+				}
+				base := credential.BaseURL
+				if issuer != nil {
+					base = issuer.String()
+				}
+				client, err := deps.newClient(base, global.timeout, global.allowInsecureHTTP)
+				if err != nil {
+					return err
+				}
+				if credential, err = client.Refresh(command.Context(), credential); err != nil {
+					return err
+				}
+				if err := store.Save(command.Context(), credential); err != nil {
+					return err
+				}
 			}
 			if credential.AuthorizationHeader() == "" {
 				return litellmauth.ErrProtocol
@@ -556,6 +638,18 @@ func printError(output io.Writer, err error) {
 			available[index] = teamLabel(team)
 		}
 		fmt.Fprintf(output, "Team selection required; rerun with --team <team-id>. Available: %s\n", strings.Join(available, ", "))
+	case errors.Is(err, litellmauth.ErrRefreshRejected):
+		fmt.Fprintln(output, "Refresh token was rejected; run litellm-auth login again.")
+	case errors.Is(err, litellmauth.ErrLoopbackUnavailable):
+		fmt.Fprintln(output, "Could not open a loopback callback port; use --flow device or --oidc-redirect-port.")
+	case errors.Is(err, litellmauth.ErrOIDCDeviceUnsupported):
+		fmt.Fprintln(output, litellmauth.ErrOIDCDeviceUnsupported)
+	case errors.Is(err, litellmauth.ErrPKCEUnsupported):
+		fmt.Fprintln(output, litellmauth.ErrPKCEUnsupported)
+	case errors.Is(err, litellmauth.ErrPKCEDenied):
+		fmt.Fprintln(output, litellmauth.ErrPKCEDenied)
+	case errors.Is(err, litellmauth.ErrProxyUnavailable):
+		fmt.Fprintln(output, litellmauth.ErrProxyUnavailable)
 	case errors.Is(err, litellmauth.ErrOriginMismatch):
 		fmt.Fprintln(output, litellmauth.ErrOriginMismatch)
 	case errors.Is(err, litellmauth.ErrUnsupportedProxy):
