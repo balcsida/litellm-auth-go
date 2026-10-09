@@ -17,6 +17,8 @@ import (
 	litellmauth "github.com/balcsida/litellm-auth-go"
 )
 
+var _ litellmauth.CredentialStore = (*FileStore)(nil)
+
 func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(privateTempDir(t), "token.json")
 	store, err := NewFileStore(path)

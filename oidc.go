@@ -24,45 +24,129 @@ const AuthMethodOIDC AuthMethod = "oidc-pkce"
 // provider. There is no client secret: PKCE replaces it.
 type OIDCProvider struct {
 	// Issuer is the OIDC issuer, e.g. https://login.example.com/oidc/2.
-	// AuthorizeURL and TokenURL default to <Issuer>/auth and <Issuer>/token.
+	// Endpoints left empty come from OIDC discovery of the issuer.
 	Issuer string
 	// ClientID is the public client's id (a public identifier, not a secret).
 	ClientID string
 	// Scope is the space-separated scope list; "openid" is required.
 	Scope string
-	// AuthorizeURL and TokenURL override the issuer-relative defaults.
-	AuthorizeURL string
-	TokenURL     string
-}
-
-func (p OIDCProvider) authorizeURL() string {
-	if p.AuthorizeURL != "" {
-		return p.AuthorizeURL
-	}
-	return strings.TrimRight(p.Issuer, "/") + "/auth"
-}
-
-func (p OIDCProvider) tokenURL() string {
-	if p.TokenURL != "" {
-		return p.TokenURL
-	}
-	return strings.TrimRight(p.Issuer, "/") + "/token"
+	// AuthorizeURL, TokenURL and DeviceAuthorizationURL override the endpoints
+	// that discovery would supply.
+	AuthorizeURL           string
+	TokenURL               string
+	DeviceAuthorizationURL string
 }
 
 func (p OIDCProvider) validate() error {
 	if p.Issuer == "" || p.ClientID == "" {
 		return errors.New("OIDC provider issuer and client id are required")
 	}
-	for _, raw := range []string{p.Issuer, p.authorizeURL(), p.tokenURL()} {
-		u, err := url.Parse(raw)
-		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-			return errors.New("OIDC provider endpoints must be absolute https URLs")
+	for _, raw := range []string{p.Issuer, p.AuthorizeURL, p.TokenURL, p.DeviceAuthorizationURL} {
+		if raw == "" {
+			continue
 		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" || u.User != nil ||
+			(u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname()))) {
+			return errors.New("OIDC provider endpoints must be absolute https URLs (http only for loopback hosts)")
+		}
+	}
+	if u, _ := url.Parse(p.Issuer); u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("OIDC provider issuer must not have a query or fragment")
 	}
 	if !containsString(strings.Fields(p.Scope), "openid") {
 		return errors.New("OIDC provider scope must include openid")
 	}
 	return nil
+}
+
+// DiscoverOIDC fetches <Issuer>/.well-known/openid-configuration and fills the
+// provider's empty endpoints from it. The document's issuer must equal
+// provider.Issuer exactly (OpenID Connect Discovery 1.0 section 4.3); that
+// equality is the trust anchor, so endpoints may live on another origin.
+func (c *Client) DiscoverOIDC(ctx context.Context, provider OIDCProvider) (OIDCProvider, error) {
+	if err := provider.validate(); err != nil {
+		return OIDCProvider{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(provider.Issuer, "/")+"/.well-known/openid-configuration", nil)
+	if err != nil {
+		return OIDCProvider{}, errors.New("OIDC discovery request failed")
+	}
+	req.Header.Set("Accept", "application/json")
+	response, err := c.doNoRedirect(req)
+	if err != nil {
+		if errors.Is(err, errPKCERedirect) {
+			return OIDCProvider{}, protocolError("discovery: unexpected redirect")
+		}
+		return OIDCProvider{}, fmt.Errorf("OIDC discovery: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return OIDCProvider{}, &HTTPError{Op: "discovery", StatusCode: response.StatusCode}
+	}
+	body, err := readPKCEBody(response, "discovery")
+	if err != nil {
+		return OIDCProvider{}, err
+	}
+	var document struct {
+		Issuer                      string   `json:"issuer"`
+		AuthorizationEndpoint       string   `json:"authorization_endpoint"`
+		TokenEndpoint               string   `json:"token_endpoint"`
+		DeviceAuthorizationEndpoint string   `json:"device_authorization_endpoint"`
+		CodeChallengeMethods        []string `json:"code_challenge_methods_supported"`
+	}
+	if err := json.Unmarshal(body, &document); err != nil {
+		return OIDCProvider{}, protocolError("discovery: not a JSON document")
+	}
+	if document.Issuer != provider.Issuer {
+		return OIDCProvider{}, protocolError("discovery: issuer mismatch")
+	}
+	if document.AuthorizationEndpoint == "" || document.TokenEndpoint == "" {
+		return OIDCProvider{}, protocolError("discovery: authorization or token endpoint missing")
+	}
+	if len(document.CodeChallengeMethods) > 0 && !containsString(document.CodeChallengeMethods, "S256") {
+		return OIDCProvider{}, protocolError("discovery: provider does not support PKCE S256")
+	}
+	if provider.AuthorizeURL == "" {
+		provider.AuthorizeURL = document.AuthorizationEndpoint
+	}
+	if provider.TokenURL == "" {
+		provider.TokenURL = document.TokenEndpoint
+	}
+	if provider.DeviceAuthorizationURL == "" {
+		provider.DeviceAuthorizationURL = document.DeviceAuthorizationEndpoint
+	}
+	if strings.HasPrefix(provider.Issuer, "https://") {
+		for _, endpoint := range []string{provider.AuthorizeURL, provider.TokenURL, provider.DeviceAuthorizationURL} {
+			if endpoint != "" && !strings.HasPrefix(endpoint, "https://") {
+				return OIDCProvider{}, protocolError("discovery: endpoints must use https")
+			}
+		}
+	}
+	if err := provider.validate(); err != nil {
+		return OIDCProvider{}, protocolError("discovery: " + err.Error())
+	}
+	return provider, nil
+}
+
+// resolveOIDCProvider validates the provider and runs discovery only when an
+// endpoint the flow needs is empty: the token endpoint plus the authorization
+// endpoint, or the device endpoint with needDevice. The caller checks the
+// device endpoint afterwards, since not every provider advertises one.
+func (c *Client) resolveOIDCProvider(ctx context.Context, provider OIDCProvider, needDevice bool) (OIDCProvider, error) {
+	if err := provider.validate(); err != nil {
+		return OIDCProvider{}, err
+	}
+	entry := provider.AuthorizeURL
+	if needDevice {
+		entry = provider.DeviceAuthorizationURL
+	}
+	if entry == "" || provider.TokenURL == "" {
+		return c.DiscoverOIDC(ctx, provider)
+	}
+	return provider, nil
 }
 
 // OIDCOptions configures Client.AuthenticateOIDC.
@@ -83,7 +167,8 @@ func (c *Client) StartOIDC(ctx context.Context, options OIDCOptions) (*PKCESessi
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := options.Provider.validate(); err != nil {
+	provider, err := c.resolveOIDCProvider(ctx, options.Provider, false)
+	if err != nil {
 		return nil, err
 	}
 	listener, err := listenLoopback(options.RedirectPorts)
@@ -107,10 +192,10 @@ func (c *Client) StartOIDC(ctx context.Context, options OIDCOptions) (*PKCESessi
 		return nil, err
 	}
 
-	authorize, _ := url.Parse(options.Provider.authorizeURL())
+	authorize, _ := url.Parse(provider.AuthorizeURL)
 	query := authorize.Query()
 	query.Set("response_type", "code")
-	query.Set("client_id", options.Provider.ClientID)
+	query.Set("client_id", provider.ClientID)
 	query.Set("redirect_uri", redirectURI)
 	query.Set("scope", options.Provider.Scope)
 	query.Set("state", state)
@@ -122,11 +207,11 @@ func (c *Client) StartOIDC(ctx context.Context, options OIDCOptions) (*PKCESessi
 	return &PKCESession{
 		AuthorizeURL: authorize,
 		RedirectURI:  redirectURI,
-		clientID:     options.Provider.ClientID,
+		clientID:     provider.ClientID,
 		verifier:     verifier,
 		state:        state,
 		nonce:        nonce,
-		provider:     &options.Provider,
+		provider:     &provider,
 		listener:     listener,
 	}, nil
 }
@@ -156,8 +241,20 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	if credential.AuthMethod != AuthMethodOIDC || credential.RefreshToken == "" {
 		return Credential{}, fmt.Errorf("%w: credential has no refresh token", ErrRefreshRejected)
 	}
-	if err := provider.validate(); err != nil {
-		return Credential{}, err
+	if provider.TokenURL == "" {
+		provider.TokenURL = credential.TokenEndpoint
+	}
+	// Refresh needs only the token endpoint, so a provider that has one skips
+	// discovery even when AuthorizeURL is empty.
+	if provider.TokenURL != "" {
+		if err := provider.validate(); err != nil {
+			return Credential{}, err
+		}
+	} else {
+		var err error
+		if provider, err = c.resolveOIDCProvider(ctx, provider, false); err != nil {
+			return Credential{}, err
+		}
 	}
 	if credential.Issuer != "" && credential.Issuer != provider.Issuer {
 		return Credential{}, ErrOriginMismatch
@@ -166,7 +263,7 @@ func (c *Client) RefreshOIDC(ctx context.Context, provider OIDCProvider, credent
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", credential.RefreshToken)
 	form.Set("client_id", provider.ClientID)
-	token, err := c.postOIDCToken(ctx, provider.tokenURL(), form, "refresh")
+	token, err := c.postOIDCToken(ctx, provider.TokenURL, form, "refresh")
 	if err != nil {
 		return Credential{}, err
 	}
@@ -201,7 +298,7 @@ func (c *Client) redeemOIDCCode(ctx context.Context, session *PKCESession, code 
 	form.Set("redirect_uri", session.RedirectURI)
 	form.Set("client_id", provider.ClientID)
 	form.Set("code_verifier", session.verifier)
-	token, err := c.postOIDCToken(ctx, provider.tokenURL(), form, "token")
+	token, err := c.postOIDCToken(ctx, provider.TokenURL, form, "token")
 	if err != nil {
 		return Credential{}, err
 	}
@@ -253,7 +350,17 @@ func (c *Client) postOIDCToken(ctx context.Context, endpoint string, form url.Va
 				return oidcTokenResponse{}, ErrRefreshRejected
 			}
 		}
-		return oidcTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"))
+		if op == "device" {
+			switch code := oauthErrorCode(body); code {
+			case "authorization_pending", "slow_down":
+				return oidcTokenResponse{}, &devicePollError{code: code}
+			case "expired_token":
+				return oidcTokenResponse{}, &LoginTimeoutError{}
+			case "access_denied":
+				return oidcTokenResponse{}, ErrPKCEDenied
+			}
+		}
+		return oidcTokenResponse{}, pkceHTTPError(op, response, body, form.Get("code"), form.Get("code_verifier"), form.Get("refresh_token"), form.Get("device_code"))
 	}
 	var token oidcTokenResponse
 	if err := json.Unmarshal(body, &token); err != nil || token.IDToken == "" ||
@@ -338,7 +445,7 @@ func (c *Client) oidcCredential(token oidcTokenResponse, claims oidcIDTokenClaim
 		ExpiresAt:     claims.expiry(),
 		RefreshToken:  token.RefreshToken,
 		ClientID:      provider.ClientID,
-		TokenEndpoint: provider.tokenURL(),
+		TokenEndpoint: provider.TokenURL,
 	}
 }
 
