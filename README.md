@@ -54,7 +54,7 @@ credential, err := client.Authenticate(ctx, litellmauth.AuthenticateOptions{
 
 Proxies that publish `/.well-known/litellm-cli-auth` accept native clients
 through the OAuth 2.1 authorization code flow with PKCE (the flow behind
-`litellm-auth login --flow pkce`). The proxy is the authorization server: the client
+`lite login --pkce`). The proxy is the authorization server: the client
 registers itself dynamically, the user signs in and picks a team on the
 proxy's consent page, and the proxy mints the same per-user credential
 `lite login` mints, together with a rotating refresh token.
@@ -118,7 +118,7 @@ credential, err = client.AuthenticateOIDCDevice(ctx, litellmauth.OIDCDeviceOptio
 ```
 
 `client.Refresh` renews PKCE and OIDC credentials. `NewRefreshingSource` wraps a
-`CredentialStore` such as `tokenstore.NewFileStore`, refreshes when the
+`CredentialStore` such as a `tokenstore.FileStore`, refreshes when the
 credential is stale (one refresh at a time), and saves the result.
 `ErrLoopbackUnavailable` and `ErrOIDCDeviceUnsupported` report that no callback
 port could be bound or that the provider has no device endpoint.
@@ -213,8 +213,9 @@ litellm-auth import-token
 
 ### Additional credential sources
 
-Without OIDC settings, `login` uses the LiteLLM CLI SSO flow. Use `import-token` to store a token
-from an environment variable, rotating file, stdin, or an external helper:
+Without OIDC settings, `login` uses the LiteLLM CLI SSO flow. Use
+`import-token` to store a token from an environment variable, rotating file,
+stdin, or an external helper:
 
 ```sh
 litellm-auth --base-url https://proxy.example.com import-token \

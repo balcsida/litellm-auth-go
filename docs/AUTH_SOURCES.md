@@ -58,8 +58,9 @@ allowlisted through `ExecSourceConfig.AllowedEnv`.
 
 Use `NewRefreshingSource` with a `Client` and a `CredentialStore`
 (`tokenstore.FileStore` implements it). The adapter loads the stored credential
-and, when it is stale, renews it with `Client.Refresh` (PKCE or identity-provider
-OIDC), allowing one refresh at a time, and saves the result back to the store.
+and, when it is stale, renews it with `Client.Refresh` (PKCE or
+identity-provider OIDC), allowing one refresh at a time, and saves the result
+back to the store.
 Credentials without a refresh token are returned as stored or rejected once
 stale.
 
