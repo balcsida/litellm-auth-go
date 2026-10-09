@@ -36,8 +36,14 @@ jobs:
           go-version: stable
           cache: true
       - run: go vet ./...
-      - run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
-      - run: staticcheck ./...
+      - name: Run staticcheck
+        env:
+          # Go 1.27.2 writes export data version 5, which staticcheck v0.8.1
+          # cannot read; analyse with the newest toolchain it supports.
+          GOTOOLCHAIN: go1.27.1
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          staticcheck ./...
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
       - run: govulncheck ./...
 
