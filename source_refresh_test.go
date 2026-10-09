@@ -51,12 +51,6 @@ func (idp *fakeIdP) devicePollCount() int {
 	return idp.devicePolls
 }
 
-func (idp *fakeIdP) deviceCallCount() int {
-	idp.mu.Lock()
-	defer idp.mu.Unlock()
-	return idp.deviceCalls
-}
-
 func (idp *fakeIdP) discoveryCallCount() int {
 	idp.mu.Lock()
 	defer idp.mu.Unlock()
