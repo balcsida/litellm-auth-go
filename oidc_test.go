@@ -33,6 +33,7 @@ type fakeIdP struct {
 	deny          bool
 	rotateRefresh bool
 	disabledUser  bool
+	holdRefresh   chan struct{} // when non-nil, refresh grants wait for it to be closed
 	subject       string
 	issuer        string
 	audience      any
@@ -198,6 +199,9 @@ func (idp *fakeIdP) authorize(w http.ResponseWriter, r *http.Request) {
 
 func (idp *fakeIdP) token(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
+	if idp.holdRefresh != nil && r.PostForm.Get("grant_type") == "refresh_token" {
+		<-idp.holdRefresh
+	}
 	idp.mu.Lock()
 	defer idp.mu.Unlock()
 	idp.tokenCalls++
