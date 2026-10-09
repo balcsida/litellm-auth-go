@@ -24,3 +24,18 @@ other `4xx` responses, and accepting omitted `verification_uri_complete` and
 
 Reinspect all three pinned files before changing this contract or updating the
 LiteLLM commit.
+
+## Native CLI PKCE contract
+
+`AuthenticatePKCE` relies on the discovery document at
+`/.well-known/litellm-cli-auth`, added by BerriAI/litellm#37626 and released in
+LiteLLM v1.99.0. The CI smoke job installs v1.99.0. The CLI SSO contract files
+above were last inspected at the commit named at the top of this file.
+
+## Identity-provider login
+
+`AuthenticateOIDC` relies only on `litellm_jwtauth.issuers` (`issuer`,
+`jwks_url`, `audience`, `disable_audience_validation`), available since
+LiteLLM v1.99.0. No LiteLLM-side discovery is used; the issuer and client id
+are configured on the client. The earlier draft of this feature depended on
+BerriAI/litellm#35234, which was closed unmerged.

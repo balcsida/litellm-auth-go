@@ -54,6 +54,15 @@ Set either `expires_at` or `non_expiring`, unless the token is a JWT with an
 stderr to callers. Helpers inherit no environment unless it is explicitly
 allowlisted through `ExecSourceConfig.AllowedEnv`.
 
+### Refreshing store
+
+Use `NewRefreshingSource` with a `Client` and a `CredentialStore`
+(`tokenstore.FileStore` implements it). The adapter loads the stored credential
+and, when it is stale, renews it with `Client.Refresh` (PKCE or identity-provider
+OIDC), allowing one refresh at a time, and saves the result back to the store.
+Credentials without a refresh token are returned as stored or rejected once
+stale.
+
 ## Binders
 
 - `NewBearerHeader("Authorization")`
